@@ -1,0 +1,57 @@
+# Ransomware Guard - .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backend specific
+backend/logs/
+backend/.env
+
+# Frontend specific
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/.env
+
+# Test files
+**/temp_test_files/
+*.encrypted
+*.locked
+
+# Report (keep folder, ignore generated files)
+report/
+
+.python-version
+
+test_files/
