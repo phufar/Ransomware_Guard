@@ -1,0 +1,565 @@
+"""
+EBPFMonitor - Kernel-level File Write Detection using eBPF/kprobes
+
+Hooks vfs_write(), vfs_rename(), and vfs_unlink() via kprobes to detect
+file modifications at the kernel level. Provides PID, process name,
+filename, and byte count IMMEDIATELY without /proc scanning.
+
+Requirements:
+    - Linux kernel >= 4.15 with BPF support
+    - Root privileges (sudo)
+    - BCC library: sudo apt install python3-bpfcc linux-headers-$(uname -r)
+
+If BCC is unavailable or not running as root, is_available() returns False
+and the system should fall back to Watchdog (inotify).
+"""
+
+import os
+import logging
+import threading
+import time
+from typing import Callable, Optional, List, Dict
+from dataclasses import dataclass, field
+
+logger = logging.getLogger("ransomware_guard.ebpf")
+
+# --- Try importing BCC ---
+try:
+    from bcc import BPF
+    BCC_AVAILABLE = True
+except ImportError:
+    BCC_AVAILABLE = False
+    logger.info("BCC not installed - eBPF unavailable (will use Watchdog fallback)")
+
+
+# --- Event Types (must match values in BPF C program) ---
+EVENT_WRITE = 1
+EVENT_RENAME = 2
+EVENT_UNLINK = 3
+
+EVENT_TYPE_NAMES = {
+    EVENT_WRITE: "WRITE",
+    EVENT_RENAME: "RENAME",
+    EVENT_UNLINK: "DELETE",
+}
+
+
+# --- eBPF C Program ---
+# This C code is compiled and injected into the Linux kernel at runtime.
+# It hooks vfs_write via kprobe and rename/unlink via tracepoints.
+# Each hook extracts PID, process name, filename, and byte count,
+# then sends an event to user-space via a perf ring buffer.
+BPF_PROGRAM = r"""
+#include <uapi/linux/ptrace.h>
+#include <linux/fs.h>
+#include <linux/sched.h>
+
+#define EVENT_WRITE  1
+#define EVENT_RENAME 2
+#define EVENT_UNLINK 3
+
+// Event structure shared between kernel and user-space
+struct file_event_t {
+    u32 pid;            // Process ID
+    u32 uid;            // User ID
+    u32 event_type;     // EVENT_WRITE, EVENT_RENAME, or EVENT_UNLINK
+    u64 bytes_written;  // Number of bytes (only for WRITE events)
+    char comm[16];      // Process name (command)
+    char filename[256]; // Filename (basename from dentry)
+};
+
+// Perf ring buffer: kernel writes events, user-space reads them
+BPF_PERF_OUTPUT(file_events);
+
+// Per-PID write counter to detect rapid file writes (ransomware pattern)
+BPF_HASH(write_counts, u32, u64);
+
+// =============================================================
+// HOOK 1: kprobe on vfs_write()
+// Triggered every time any process writes to any file.
+// The kprobe mechanism replaces the first byte of vfs_write()
+// with a breakpoint instruction (int3 on x86, brk on ARM).
+// When the CPU hits it, the kernel calls our eBPF function.
+// =============================================================
+int trace_vfs_write(struct pt_regs *ctx,
+                    struct file *file,
+                    const char __user *buf,
+                    size_t count) {
+
+    // Skip very small writes (metadata updates, log flushes)
+    if (count < 64)
+        return 0;
+
+    struct file_event_t event = {};
+
+    // Extract process information from the current task_struct
+    event.pid = bpf_get_current_pid_tgid() >> 32;
+    event.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
+    event.event_type = EVENT_WRITE;
+    event.bytes_written = count;
+    bpf_get_current_comm(&event.comm, sizeof(event.comm));
+
+    // Extract filename from: file -> f_path.dentry -> d_name.name
+    struct dentry *de = NULL;
+    bpf_probe_read_kernel(&de, sizeof(de), &file->f_path.dentry);
+    if (de) {
+        const unsigned char *name = NULL;
+        bpf_probe_read_kernel(&name, sizeof(name), &de->d_name.name);
+        if (name) {
+            bpf_probe_read_kernel_str(&event.filename,
+                                       sizeof(event.filename), name);
+        }
+    }
+
+    // Skip files with no name or hidden files (starting with '.')
+    if (event.filename[0] == '\0' || event.filename[0] == '.')
+        return 0;
+
+    // Increment per-PID write counter for anomaly detection
+    u64 *count_ptr = write_counts.lookup(&event.pid);
+    if (count_ptr) {
+        (*count_ptr)++;
+    } else {
+        u64 initial = 1;
+        write_counts.update(&event.pid, &initial);
+    }
+
+    // Send event to user-space via perf ring buffer
+    file_events.perf_submit(ctx, &event, sizeof(event));
+    return 0;
+}
+
+// =============================================================
+// HOOK 2: tracepoint on sys_enter_renameat2
+// Ransomware typically renames files after encryption:
+//   document.docx -> document.docx.encrypted
+// =============================================================
+TRACEPOINT_PROBE(syscalls, sys_enter_renameat2) {
+    struct file_event_t event = {};
+
+    event.pid = bpf_get_current_pid_tgid() >> 32;
+    event.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
+    event.event_type = EVENT_RENAME;
+    event.bytes_written = 0;
+    bpf_get_current_comm(&event.comm, sizeof(event.comm));
+
+    // Read the destination filename (new name after rename)
+    bpf_probe_read_user_str(&event.filename, sizeof(event.filename),
+                            (void *)args->newname);
+
+    if (event.filename[0] == '\0')
+        return 0;
+
+    file_events.perf_submit(ctx, &event, sizeof(event));
+    return 0;
+}
+
+// =============================================================
+// HOOK 3: tracepoint on sys_enter_unlinkat
+// Ransomware deletes original files after encrypting them.
+// =============================================================
+TRACEPOINT_PROBE(syscalls, sys_enter_unlinkat) {
+    struct file_event_t event = {};
+
+    event.pid = bpf_get_current_pid_tgid() >> 32;
+    event.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
+    event.event_type = EVENT_UNLINK;
+    event.bytes_written = 0;
+    bpf_get_current_comm(&event.comm, sizeof(event.comm));
+
+    bpf_probe_read_user_str(&event.filename, sizeof(event.filename),
+                            (void *)args->pathname);
+
+    if (event.filename[0] == '\0')
+        return 0;
+
+    file_events.perf_submit(ctx, &event, sizeof(event));
+    return 0;
+}
+"""
+
+
+@dataclass
+class EBPFFileEvent:
+    """
+    Represents a single file event captured by the eBPF kprobe.
+
+    Attributes:
+        pid:            Process ID that triggered the event
+        uid:            User ID of the process
+        event_type:     EVENT_WRITE, EVENT_RENAME, or EVENT_UNLINK
+        bytes_written:  Number of bytes written (0 for rename/unlink)
+        process_name:   Name of the process (from task_struct->comm)
+        filename:       Filename (basename from dentry, not full path)
+        timestamp:      Time the event was received in user-space
+    """
+    pid: int
+    uid: int
+    event_type: int
+    bytes_written: int
+    process_name: str
+    filename: str
+    timestamp: float = field(default_factory=time.time)
+
+    @property
+    def event_type_name(self) -> str:
+        return EVENT_TYPE_NAMES.get(self.event_type, "UNKNOWN")
+
+    def __repr__(self):
+        return (f"EBPFFileEvent({self.event_type_name} | "
+                f"PID:{self.pid} {self.process_name} | "
+                f"file:{self.filename} | {self.bytes_written}B)")
+
+
+# Type alias for the event callback
+EventCallback = Callable[[EBPFFileEvent], None]
+
+
+class EBPFMonitor:
+    """
+    eBPF-based file system monitor using kprobes.
+
+    Attaches an eBPF program to vfs_write() via kprobe. The kernel
+    automatically invokes the eBPF program every time any process calls
+    vfs_write(), providing PID, process name, filename, and byte count.
+
+    Lifecycle:
+        1. start()   - Compile eBPF C → verify → JIT → load → attach kprobe
+        2. (running)  - Kernel calls eBPF hook on every vfs_write()
+                       - Events flow through perf ring buffer to Python callback
+        3. stop()    - Detach kprobe → remove breakpoint → cleanup
+
+    Usage:
+        def on_file_event(event: EBPFFileEvent):
+            print(f"PID {event.pid} wrote {event.bytes_written}B to {event.filename}")
+
+        monitor = EBPFMonitor(callback=on_file_event)
+        if monitor.start():
+            # Monitor is running, events arrive via callback
+            ...
+            monitor.stop()
+        else:
+            # eBPF not available, use Watchdog fallback
+            ...
+    """
+
+    # Directories to ignore (skip events from these paths)
+    IGNORED_DIRS = {
+        '/proc', '/sys', '/dev', '/run', '/snap',
+        '/var/log', '/var/cache', '/var/tmp', '/tmp',
+    }
+
+    # Extensions to ignore
+    IGNORED_EXTENSIONS = {
+        '.tmp', '.log', '.pyc', '.swp', '.lock',
+        '.journal', '.pid', '.sock',
+    }
+
+    # Processes to ignore (system daemons that write frequently)
+    IGNORED_PROCESSES = {
+        'systemd-journal', 'rsyslogd', 'auditd', 'kworker',
+        'jbd2', 'flush', 'pdflush', 'kswapd',
+    }
+
+    def __init__(self, callback: Optional[EventCallback] = None,
+                 watch_path: Optional[str] = None):
+        """
+        Initialize the eBPF monitor.
+
+        Args:
+            callback:   Function called for each file event. Receives an
+                        EBPFFileEvent with pid, process_name, filename, etc.
+            watch_path: Optional directory to filter events. If set, only
+                        events from files under this path are reported.
+                        Note: eBPF sees basenames from dentry; full-path
+                        filtering requires post-processing in user-space.
+        """
+        self.callback = callback
+        self.watch_path = os.path.abspath(watch_path) if watch_path else None
+        self._bpf = None
+        self._running = False
+        self._poll_thread = None
+        self._own_pid = os.getpid()
+
+        # Statistics
+        self.stats = {
+            'events_received': 0,
+            'events_filtered': 0,
+            'writes': 0,
+            'renames': 0,
+            'deletes': 0,
+        }
+
+    @staticmethod
+    def is_available() -> bool:
+        """
+        Check if eBPF monitoring can be used on this system.
+
+        Returns False if:
+            - BCC library is not installed
+            - Not running as root (eBPF requires CAP_BPF)
+            - Not running on Linux
+        """
+        if not BCC_AVAILABLE:
+            return False
+
+        if os.geteuid() != 0:
+            logger.info("eBPF requires root privileges")
+            return False
+
+        import platform
+        if platform.system() != 'Linux':
+            logger.info(f"eBPF requires Linux (current OS: {platform.system()})")
+            return False
+
+        return True
+
+    def start(self) -> bool:
+        """
+        Start the eBPF monitor.
+
+        Compiles the BPF C program, loads it into the kernel, and attaches
+        a kprobe to vfs_write(). Starts a background thread to poll the
+        perf ring buffer for events.
+
+        Returns:
+            True if eBPF started successfully.
+            False if eBPF is not available (caller should use Watchdog fallback).
+        """
+        if not self.is_available():
+            logger.warning("eBPF not available on this system")
+            return False
+
+        if self._running:
+            logger.warning("eBPF monitor is already running")
+            return True
+
+        try:
+            # Step 1: Compile C -> eBPF bytecode -> verify -> JIT -> load
+            logger.info("Compiling eBPF program...")
+            self._bpf = BPF(text=BPF_PROGRAM)
+
+            # Step 2: Attach kprobe to vfs_write
+            # This replaces the first instruction of vfs_write() with a
+            # breakpoint, causing the CPU to trap into our eBPF program
+            # every time vfs_write() is called.
+            self._bpf.attach_kprobe(event="vfs_write",
+                                     fn_name="trace_vfs_write")
+            logger.info("Attached kprobe to vfs_write()")
+
+            # Tracepoints for rename/unlink are auto-attached by BCC
+            # via TRACEPOINT_PROBE macros in the C program.
+
+            # Step 3: Open perf ring buffer for receiving events
+            self._bpf["file_events"].open_perf_buffer(
+                self._handle_kernel_event,
+                page_cnt=64  # Ring buffer size (64 pages = 256KB)
+            )
+
+            self._running = True
+
+            # Step 4: Start background polling thread
+            self._poll_thread = threading.Thread(
+                target=self._poll_events,
+                daemon=True,
+                name="ebpf-event-poll"
+            )
+            self._poll_thread.start()
+
+            logger.info("eBPF monitor started - hooked: vfs_write, "
+                        "sys_enter_renameat2, sys_enter_unlinkat")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to start eBPF monitor: {e}")
+            if self._bpf:
+                try:
+                    self._bpf.cleanup()
+                except Exception:
+                    pass
+                self._bpf = None
+            return False
+
+    def stop(self):
+        """
+        Stop the eBPF monitor.
+
+        Signals the polling thread to exit, detaches the kprobe
+        (removes the breakpoint instruction from vfs_write), and
+        frees kernel resources.
+        """
+        if not self._running:
+            return
+
+        self._running = False
+
+        # Wait for polling thread to finish
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=5)
+
+        # Detach kprobes and clean up BPF resources
+        if self._bpf:
+            try:
+                self._bpf.cleanup()
+            except Exception as e:
+                logger.error(f"Error during eBPF cleanup: {e}")
+            self._bpf = None
+
+        logger.info(f"eBPF monitor stopped | Stats: {self.stats}")
+
+    @property
+    def running(self) -> bool:
+        """Whether the eBPF monitor is currently active."""
+        return self._running
+
+    def get_write_count_for_pid(self, pid: int) -> int:
+        """
+        Get the total number of writes by a specific PID from the
+        kernel-side BPF hash map. Useful for detecting rapid-write
+        anomalies (ransomware pattern).
+
+        Args:
+            pid: Process ID to query
+
+        Returns:
+            Number of writes recorded by the eBPF program, or 0.
+        """
+        if not self._bpf:
+            return 0
+        try:
+            import ctypes
+            key = ctypes.c_uint32(pid)
+            val = self._bpf["write_counts"][key]
+            return val.value
+        except (KeyError, Exception):
+            return 0
+
+    def _poll_events(self):
+        """
+        Background thread: continuously polls the perf ring buffer.
+
+        The kernel writes events into the ring buffer whenever the kprobe
+        fires. This thread reads them out and invokes _handle_kernel_event
+        for each one.
+        """
+        logger.debug("eBPF event polling thread started")
+        while self._running:
+            try:
+                if self._bpf:
+                    # Poll with 1-second timeout so we can check _running flag
+                    self._bpf.perf_buffer_poll(timeout=1000)
+            except Exception as e:
+                if self._running:
+                    logger.error(f"eBPF poll error: {e}")
+                    time.sleep(0.5)  # Prevent tight error loop
+        logger.debug("eBPF event polling thread stopped")
+
+    def _handle_kernel_event(self, cpu, data, size):
+        """
+        Callback invoked by BCC when an event arrives from the kernel.
+
+        Parses the raw event data from the perf buffer into an
+        EBPFFileEvent and applies filtering before forwarding to
+        the user callback.
+
+        Args:
+            cpu:  CPU core that generated the event
+            data: Raw bytes from the perf ring buffer
+            size: Size of the event data
+        """
+        try:
+            # Parse the raw C struct from kernel
+            event = self._bpf["file_events"].event(data)
+
+            filename = event.filename.decode('utf-8', errors='replace') \
+                            .rstrip('\x00')
+            process_name = event.comm.decode('utf-8', errors='replace') \
+                               .rstrip('\x00')
+
+            # --- Filtering ---
+
+            # 1. Skip events from our own process
+            if event.pid == self._own_pid:
+                return
+
+            # 2. Skip empty filenames
+            if not filename:
+                return
+
+            # 3. Skip ignored processes
+            if process_name in self.IGNORED_PROCESSES:
+                self.stats['events_filtered'] += 1
+                return
+
+            # 4. Skip ignored file extensions
+            _, ext = os.path.splitext(filename)
+            if ext.lower() in self.IGNORED_EXTENSIONS:
+                self.stats['events_filtered'] += 1
+                return
+
+            # --- Build event object ---
+            file_event = EBPFFileEvent(
+                pid=event.pid,
+                uid=event.uid,
+                event_type=event.event_type,
+                bytes_written=event.bytes_written,
+                process_name=process_name,
+                filename=filename,
+            )
+
+            # Update statistics
+            self.stats['events_received'] += 1
+            if event.event_type == EVENT_WRITE:
+                self.stats['writes'] += 1
+            elif event.event_type == EVENT_RENAME:
+                self.stats['renames'] += 1
+            elif event.event_type == EVENT_UNLINK:
+                self.stats['deletes'] += 1
+
+            # Forward to user callback
+            if self.callback:
+                self.callback(file_event)
+
+        except Exception as e:
+            logger.error(f"Error processing eBPF event: {e}")
+
+    def get_stats(self) -> Dict:
+        """Return monitoring statistics."""
+        return self.stats.copy()
+
+
+# =============================================================
+# Standalone test: run this file directly to see eBPF events
+# =============================================================
+if __name__ == "__main__":
+    import sys
+
+    if not EBPFMonitor.is_available():
+        print("ERROR: eBPF not available on this system")
+        print("Requirements:")
+        print("  - Linux with kernel >= 4.15")
+        print("  - Root privileges (run with sudo)")
+        print("  - BCC library: sudo apt install python3-bpfcc")
+        sys.exit(1)
+
+    def print_event(event: EBPFFileEvent):
+        icon = {"WRITE": "W", "RENAME": "R", "DELETE": "D"}
+        print(f"  [{icon.get(event.event_type_name, '?')}] "
+              f"PID:{event.pid:<6} {event.process_name:<16} "
+              f"{event.filename} ({event.bytes_written}B)")
+
+    monitor = EBPFMonitor(callback=print_event)
+
+    if monitor.start():
+        print("eBPF Monitor running (Ctrl+C to stop)")
+        print("-" * 60)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print(f"\nStats: {monitor.get_stats()}")
+        finally:
+            monitor.stop()
+    else:
+        print("Failed to start eBPF monitor")
+        sys.exit(1)

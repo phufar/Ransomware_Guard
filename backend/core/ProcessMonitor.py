@@ -433,6 +433,63 @@ class ProcessMonitor:
         self.action_log.append(result)
         return result
     
+    def handle_ransomware_alert_with_pid(self, file_path: str,
+                                             entropy: float,
+                                             pid: int) -> Dict:
+        """
+        Handle ransomware alert with a known PID from eBPF.
+
+        Called when eBPF provides the PID directly from the kernel,
+        bypassing the expensive /proc scan entirely.
+
+        Args:
+            file_path: Path to the high-entropy file
+            entropy:   Calculated entropy value
+            pid:       Process ID from eBPF kprobe (trusted, kernel-provided)
+
+        Returns:
+            Dictionary with detection and action results
+        """
+        result = {
+            'file_path': file_path,
+            'entropy': entropy,
+            'process_found': False,
+            'process_info': None,
+            'action_taken': None,
+            'timestamp': time.time(),
+            'detection_method': 'ebpf',
+        }
+
+        try:
+            import psutil
+            proc = psutil.Process(pid)
+            process_info = self._get_process_info(proc)
+
+            if process_info:
+                result['process_found'] = True
+                result['process_info'] = {
+                    'pid': process_info.pid,
+                    'name': process_info.name,
+                    'exe': process_info.exe,
+                    'cmdline': ' '.join(process_info.cmdline),
+                    'username': process_info.username,
+                }
+
+                # Terminate the process
+                action_result = self.terminate_process(process_info)
+                result['action_taken'] = action_result
+
+                logger.critical(
+                    f"RANSOMWARE BLOCKED (eBPF): {process_info.name} "
+                    f"(PID: {pid})"
+                )
+        except psutil.NoSuchProcess:
+            logger.warning(f"eBPF PID {pid} no longer exists")
+        except Exception as e:
+            logger.error(f"Error handling eBPF alert for PID {pid}: {e}")
+
+        return result
+
     def handle_ransomware_alert(self, file_path: str, entropy: float) -> Dict:
         """
         Main handler called when ransomware is detected.
