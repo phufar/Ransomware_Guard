@@ -6,7 +6,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
@@ -84,62 +84,40 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  5. Launch tmux with split panes
+#  5. Launch tmux with 3-pane layout
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+#  ┌──────────────────┬──────────────────────────┐
+#  │  STATUS (pane 0) │                          │
+#  ├──────────────────┤  BACKEND (pane 1)        │
+#  │  FRONTEND        │  uvicorn :8000           │
+#  │  (pane 2)        │                          │
+#  └──────────────────┴──────────────────────────┘
+#
 echo ""
 info "Starting tmux session: $SESSION_NAME"
 
-# Backend command
-BACKEND_CMD="source '$BACKEND_DIR/.venv/bin/activate' && \
-echo -e '${GREEN}═══════════════════════════════════════${NC}' && \
-echo -e '${GREEN}  🛡️  BACKEND  (uvicorn :8000)${NC}' && \
-echo -e '${GREEN}═══════════════════════════════════════${NC}' && \
-echo '' && \
-sudo '$BACKEND_DIR/.venv/bin/python' -m uvicorn app.main:app \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --reload \
-    --app-dir '$BACKEND_DIR'"
+# Step 1: Create session with status pane (top-left = pane 0)
+tmux new-session -d -s "$SESSION_NAME" -n "guard" "bash $PROJECT_DIR/.tmux_status.sh"
 
-# Frontend command
-FRONTEND_CMD="echo -e '${GREEN}═══════════════════════════════════════${NC}' && \
-echo -e '${GREEN}  🖥️  FRONTEND (vite :5173)${NC}' && \
-echo -e '${GREEN}═══════════════════════════════════════${NC}' && \
-echo '' && \
-npm run dev --prefix '$FRONTEND_DIR'"
+# Step 2: Split vertically → right pane for backend (pane 1 = full right)
+tmux split-window -h -t "$SESSION_NAME:guard.0" -l 55% "bash $PROJECT_DIR/.tmux_backend.sh"
 
-# Create session with backend in the first pane
-tmux new-session -d -s "$SESSION_NAME" -n "guard" "$BACKEND_CMD"
+# Step 3: Split left pane horizontally → bottom-left for frontend (pane 2)
+tmux split-window -v -t "$SESSION_NAME:guard.0" -l 65% "bash $PROJECT_DIR/.tmux_frontend.sh"
 
-# Split horizontally (top/bottom) and run frontend in the bottom pane
-tmux split-window -v -t "$SESSION_NAME:guard" "$FRONTEND_CMD"
+# Select the backend pane by default
+tmux select-pane -t "$SESSION_NAME:guard.2"
 
-# Select the top pane (backend) by default
-tmux select-pane -t "$SESSION_NAME:guard.0"
-
-# Add a status bar with useful info
+# ── Style the tmux bar ──────────────────────────────────────────────────────
 tmux set-option -t "$SESSION_NAME" status on
 tmux set-option -t "$SESSION_NAME" status-style "bg=colour235,fg=colour136"
-tmux set-option -t "$SESSION_NAME" status-left "#[fg=colour46,bold] 🛡️ Ransomware Guard "
-tmux set-option -t "$SESSION_NAME" status-right "#[fg=colour75] Backend :8000 | Frontend :5173 #[fg=colour240]| %H:%M "
+tmux set-option -t "$SESSION_NAME" status-left "#[fg=colour46,bold] 🛡️  Ransomware Guard "
+tmux set-option -t "$SESSION_NAME" status-right "#[fg=colour75]Backend :8000 | Frontend :5173 #[fg=colour240]| %H:%M "
 tmux set-option -t "$SESSION_NAME" status-left-length 30
 tmux set-option -t "$SESSION_NAME" status-right-length 50
-
-echo -e "${GREEN}════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Ransomware Guard tmux session started!${NC}"
-echo -e "${GREEN}  Backend  → http://0.0.0.0:8000   (top pane)${NC}"
-echo -e "${GREEN}  Frontend → http://localhost:5173  (bottom pane)${NC}"
-echo -e "${GREEN}════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${CYAN}  Tmux cheatsheet:${NC}"
-echo -e "    Ctrl+B ↑/↓    Switch between panes"
-echo -e "    Ctrl+B d       Detach from session"
-echo -e "    Ctrl+B z       Zoom into current pane"
-echo -e "    Ctrl+C         Stop current service"
-echo ""
-echo -e "${YELLOW}  To reattach:${NC}  tmux attach -t $SESSION_NAME"
-echo -e "${YELLOW}  To stop all:${NC}  tmux kill-session -t $SESSION_NAME"
-echo ""
+tmux set-option -t "$SESSION_NAME" pane-border-style "fg=colour238"
+tmux set-option -t "$SESSION_NAME" pane-active-border-style "fg=colour46"
 
 # Attach to the session
 tmux attach-session -t "$SESSION_NAME"

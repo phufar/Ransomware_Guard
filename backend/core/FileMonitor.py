@@ -176,7 +176,11 @@ class FileMonitor:
             self._observer.stop()
             self._observer.join()
 
-        logger.info(f"Monitor stopped | Backup stats: {self.backup_manager.get_stats()}")
+        # Clean up all backup files on shutdown
+        logger.info(f"Cleaning up backups | Stats: {self.backup_manager.get_stats()}")
+        self.backup_manager.cleanup_all(watch_dir=self.path_to_watch)
+
+        logger.info("Monitor stopped, all backups removed")
 
     @property
     def running(self) -> bool:

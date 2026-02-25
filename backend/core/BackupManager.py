@@ -350,18 +350,46 @@ class BackupManager:
         """Return backup statistics."""
         return {**self.stats, 'active_backups': len(self._active_backups)}
 
-    def cleanup_all(self):
-        """Remove all active backups and the backup directory."""
+    def cleanup_all(self, watch_dir: str = None):
+        """Remove all active and proactive backups, and delete backup directories.
+
+        Args:
+            watch_dir: If provided, walk this directory to find and remove
+                       all .ransomware_guard_backups folders (needed when
+                       backup_dir is None and backups are per-directory).
+        """
         with self._lock:
+            # Remove reactive backups
             for backup_path in self._active_backups.values():
                 self._remove_backup_files(backup_path)
             self._active_backups.clear()
 
+            # Remove proactive backups
+            for backup_path in self._proactive_backups.values():
+                self._remove_backup_files(backup_path)
+            self._proactive_backups.clear()
+
+        # Remove the central backup directory if set
         if self.backup_dir and self.backup_dir.exists():
             try:
                 shutil.rmtree(self.backup_dir)
             except OSError as e:
                 logger.error(f"Failed to remove backup dir: {e}")
+
+        # Walk watched directory to find and remove per-directory backup folders
+        if watch_dir:
+            try:
+                for root, dirs, _files in os.walk(watch_dir):
+                    for d in dirs:
+                        if d == DEFAULT_BACKUP_DIR_NAME:
+                            backup_dir_path = os.path.join(root, d)
+                            try:
+                                shutil.rmtree(backup_dir_path)
+                                logger.debug(f"Removed backup dir: {backup_dir_path}")
+                            except OSError as e:
+                                logger.error(f"Failed to remove {backup_dir_path}: {e}")
+            except OSError as e:
+                logger.error(f"Error walking {watch_dir} for cleanup: {e}")
 
 
 # --- Self-test ---
