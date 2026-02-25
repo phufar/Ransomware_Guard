@@ -51,10 +51,13 @@ class BackupManager:
 
         self._lock = threading.Lock()
         self._active_backups: Dict[str, str] = {}  # {original_path: backup_path}
+        # Proactive backups: pre-write copies of watched files
+        self._proactive_backups: Dict[str, str] = {}  # {original_path: backup_path}
         self.stats = {
             'backups_created': 0,
             'backups_restored': 0,
             'backups_removed': 0,
+            'proactive_backups': 0,
         }
 
     def _ensure_backup_dir(self, file_path: str) -> Path:
@@ -143,6 +146,90 @@ class BackupManager:
             except Exception as e:
                 logger.error(f"Backup failed for {abs_path}: {e}")
                 return None
+
+    def maintain_proactive_backup(self, file_path: str) -> Optional[str]:
+        """
+        Create or update a proactive backup of a file BEFORE any modification.
+
+        Unlike create_backup(), this is called proactively during startup
+        or periodic scans to ensure we have a clean copy of each file
+        before ransomware can modify it.
+
+        Args:
+            file_path: Absolute path to the file to back up
+
+        Returns:
+            Path to the proactive backup file, or None if failed
+        """
+        abs_path = os.path.abspath(file_path)
+
+        if not os.path.exists(abs_path):
+            return None
+        try:
+            file_size = os.path.getsize(abs_path)
+            if file_size == 0:
+                return None
+        except OSError:
+            return None
+
+        if DEFAULT_BACKUP_DIR_NAME in abs_path:
+            return None
+
+        with self._lock:
+            # If we already have a proactive backup and the file hasn't
+            # changed since, skip (avoid unnecessary I/O)
+            existing = self._proactive_backups.get(abs_path)
+            if existing and os.path.exists(existing):
+                try:
+                    # Compare mtimes: if original is older than backup, skip
+                    orig_mtime = os.path.getmtime(abs_path)
+                    bak_mtime = os.path.getmtime(existing)
+                    if orig_mtime <= bak_mtime:
+                        return existing
+                except OSError:
+                    pass
+
+            try:
+                backup_dir = self._ensure_backup_dir(abs_path)
+                backup_name = f"{os.path.basename(abs_path)}.proactive.RGswap"
+                backup_path = str(backup_dir / backup_name)
+
+                shutil.copy2(abs_path, backup_path)
+
+                # Save metadata
+                metadata = {
+                    'original_path': abs_path,
+                    'backup_path': backup_path,
+                    'file_hash': self._compute_hash(abs_path),
+                    'file_size': file_size,
+                    'timestamp': time.time(),
+                    'type': 'proactive',
+                }
+                with open(backup_path + '.meta.json', 'w') as f:
+                    json.dump(metadata, f, indent=2)
+
+                self._proactive_backups[abs_path] = backup_path
+                self.stats['proactive_backups'] += 1
+                logger.debug(f"Proactive backup: {os.path.basename(abs_path)}")
+                return backup_path
+
+            except Exception as e:
+                logger.error(f"Proactive backup failed for {abs_path}: {e}")
+                return None
+
+    def get_proactive_backup(self, file_path: str) -> Optional[str]:
+        """
+        Get the proactive (pre-write) backup path for a file.
+
+        Returns:
+            Backup path if a valid proactive backup exists, None otherwise.
+        """
+        abs_path = os.path.abspath(file_path)
+        with self._lock:
+            backup_path = self._proactive_backups.get(abs_path)
+            if backup_path and os.path.exists(backup_path):
+                return backup_path
+        return None
 
     def restore_backup(self, file_path: str) -> bool:
         """

@@ -64,8 +64,10 @@ struct file_event_t {
     u32 uid;            // User ID
     u32 event_type;     // EVENT_WRITE, EVENT_RENAME, or EVENT_UNLINK
     u64 bytes_written;  // Number of bytes (only for WRITE events)
+    u32 rapid_writes;   // 1 if PID has burst-write pattern (anomaly flag)
     char comm[16];      // Process name (command)
     char filename[256]; // Filename (basename from dentry)
+    char fullpath[256]; // Full path reconstructed from dentry chain
 };
 
 // Perf ring buffer: kernel writes events, user-space reads them
@@ -97,6 +99,7 @@ int trace_vfs_write(struct pt_regs *ctx,
     event.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     event.event_type = EVENT_WRITE;
     event.bytes_written = count;
+    event.rapid_writes = 0;
     bpf_get_current_comm(&event.comm, sizeof(event.comm));
 
     // Extract filename from: file -> f_path.dentry -> d_name.name
@@ -115,13 +118,72 @@ int trace_vfs_write(struct pt_regs *ctx,
     if (event.filename[0] == '\0' || event.filename[0] == '.')
         return 0;
 
+    // --- Full path reconstruction via dentry chain walk ---
+    // Walk dentry -> d_parent -> d_parent -> ... to build the full path.
+    // We collect path components in reverse, then assemble them.
+    // Limited to 20 components to satisfy the BPF verifier.
+    if (de) {
+        // Temporary buffer to collect path segments
+        char segments[20][64];  // Up to 20 path components, 64 chars each
+        int seg_count = 0;
+        struct dentry *current = de;
+        struct dentry *parent = NULL;
+
+        #pragma unroll
+        for (int i = 0; i < 20; i++) {
+            bpf_probe_read_kernel(&parent, sizeof(parent), &current->d_parent);
+            if (!parent || parent == current)
+                break;  // Reached filesystem root
+
+            const unsigned char *seg_name = NULL;
+            bpf_probe_read_kernel(&seg_name, sizeof(seg_name), &current->d_name.name);
+            if (seg_name) {
+                bpf_probe_read_kernel_str(&segments[i], sizeof(segments[i]), seg_name);
+                seg_count = i + 1;
+            }
+            current = parent;
+        }
+
+        // Assemble path in correct order (segments are in reverse)
+        int pos = 0;
+        if (seg_count > 0) {
+            // Build path: /seg[n-1]/seg[n-2]/.../seg[0]
+            #pragma unroll
+            for (int i = 19; i >= 0; i--) {
+                if (i >= seg_count)
+                    continue;
+                if (pos < 254) {
+                    event.fullpath[pos] = '/';
+                    pos++;
+                }
+                #pragma unroll
+                for (int j = 0; j < 63 && pos < 255; j++) {
+                    char c = segments[i][j];
+                    if (c == '\0')
+                        break;
+                    event.fullpath[pos] = c;
+                    pos++;
+                }
+            }
+            event.fullpath[pos] = '\0';
+        }
+    }
+
     // Increment per-PID write counter for anomaly detection
     u64 *count_ptr = write_counts.lookup(&event.pid);
+    u64 current_count = 0;
     if (count_ptr) {
         (*count_ptr)++;
+        current_count = *count_ptr;
     } else {
         u64 initial = 1;
         write_counts.update(&event.pid, &initial);
+        current_count = 1;
+    }
+
+    // Flag rapid-write anomaly (burst pattern = possible ransomware)
+    if (current_count > 50) {
+        event.rapid_writes = 1;
     }
 
     // Send event to user-space via perf ring buffer
@@ -150,7 +212,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_renameat2) {
     if (event.filename[0] == '\0')
         return 0;
 
-    file_events.perf_submit(ctx, &event, sizeof(event));
+    file_events.perf_submit(args, &event, sizeof(event));
     return 0;
 }
 
@@ -173,7 +235,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_unlinkat) {
     if (event.filename[0] == '\0')
         return 0;
 
-    file_events.perf_submit(ctx, &event, sizeof(event));
+    file_events.perf_submit(args, &event, sizeof(event));
     return 0;
 }
 """
@@ -191,6 +253,8 @@ class EBPFFileEvent:
         bytes_written:  Number of bytes written (0 for rename/unlink)
         process_name:   Name of the process (from task_struct->comm)
         filename:       Filename (basename from dentry, not full path)
+        fullpath:       Full path reconstructed from dentry chain walk
+        rapid_writes:   True if PID exhibits burst-write pattern (anomaly)
         timestamp:      Time the event was received in user-space
     """
     pid: int
@@ -199,6 +263,8 @@ class EBPFFileEvent:
     bytes_written: int
     process_name: str
     filename: str
+    fullpath: str = ""
+    rapid_writes: bool = False
     timestamp: float = field(default_factory=time.time)
 
     @property
@@ -206,9 +272,11 @@ class EBPFFileEvent:
         return EVENT_TYPE_NAMES.get(self.event_type, "UNKNOWN")
 
     def __repr__(self):
+        path_display = self.fullpath if self.fullpath else self.filename
+        rapid = " RAPID!" if self.rapid_writes else ""
         return (f"EBPFFileEvent({self.event_type_name} | "
                 f"PID:{self.pid} {self.process_name} | "
-                f"file:{self.filename} | {self.bytes_written}B)")
+                f"file:{path_display} | {self.bytes_written}B{rapid})")
 
 
 # Type alias for the event callback
@@ -476,6 +544,17 @@ class EBPFMonitor:
             process_name = event.comm.decode('utf-8', errors='replace') \
                                .rstrip('\x00')
 
+            # Parse full path from dentry chain walk
+            fullpath = ""
+            if hasattr(event, 'fullpath'):
+                fullpath = event.fullpath.decode('utf-8', errors='replace') \
+                                .rstrip('\x00')
+
+            # Parse rapid-write anomaly flag
+            rapid_writes = False
+            if hasattr(event, 'rapid_writes'):
+                rapid_writes = bool(event.rapid_writes)
+
             # --- Filtering ---
 
             # 1. Skip events from our own process
@@ -505,6 +584,8 @@ class EBPFMonitor:
                 bytes_written=event.bytes_written,
                 process_name=process_name,
                 filename=filename,
+                fullpath=fullpath,
+                rapid_writes=rapid_writes,
             )
 
             # Update statistics

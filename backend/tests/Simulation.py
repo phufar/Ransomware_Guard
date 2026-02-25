@@ -17,6 +17,7 @@ import time
 import secrets
 import tempfile
 import shutil
+import signal
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -24,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.EntropyCalculator import EntropyCalculator
 from core.FileMonitor import FileMonitor
-from core.ProcessMonitor import ProcessMonitor, create_alert_callback
+from core.ProcessMonitor import ProcessMonitor, ProcessInfo, create_alert_callback
+from core.BackupManager import BackupManager
 
 
 class RansomwareSimulator:
@@ -211,11 +213,242 @@ class IntegrationTest:
                     all_passed = False
         
         return all_passed
-    
+
+    def run_interpreter_trust_test(self):
+        """
+        TEST: Script interpreters are NOT trusted.
+
+        Verifies that python, node, java are no longer in TRUSTED_APPLICATIONS
+        and that is_protected() returns False for interpreter processes.
+        """
+        print("\n" + "=" * 60)
+        print("TEST 2: Interpreter Trust (Flaw #2 Fix)")
+        print("=" * 60)
+
+        pm = ProcessMonitor()
+        all_passed = True
+
+        # These interpreters must NOT be trusted
+        interpreters_to_check = ['python', 'python3', 'node', 'java', 'javac', 'npm']
+
+        for name in interpreters_to_check:
+            # Verify not in TRUSTED_APPLICATIONS
+            in_trusted = name in pm.TRUSTED_APPLICATIONS
+            in_interpreters = name in pm.SCRIPT_INTERPRETERS
+
+            # Create a fake ProcessInfo to test is_protected
+            fake_info = ProcessInfo(
+                pid=99999, name=name, exe=f"/usr/bin/{name}",
+                cmdline=[name, "evil_script.py"], username="testuser",
+                create_time=time.time(), cpu_percent=0.0, memory_percent=0.0
+            )
+            protected = pm.is_protected(fake_info)
+
+            passed = (not in_trusted) and in_interpreters and (not protected)
+            status = "✅ PASS" if passed else "❌ FAIL"
+            print(f"  {status} | '{name}' trusted={in_trusted}, "
+                  f"interpreter={in_interpreters}, protected={protected}")
+
+            if not passed:
+                all_passed = False
+
+        # Verify compilers ARE still trusted
+        for name in ['gcc', 'g++', 'rustc']:
+            in_trusted = name in pm.TRUSTED_APPLICATIONS
+            passed = in_trusted
+            status = "✅ PASS" if passed else "❌ FAIL"
+            print(f"  {status} | '{name}' still trusted={in_trusted}")
+            if not passed:
+                all_passed = False
+
+        return all_passed
+
+    def run_proactive_backup_test(self):
+        """
+        TEST: Proactive backups preserve pre-write content.
+
+        Creates a file, makes a proactive backup, then overwrites with
+        random bytes. Verifies that the proactive backup contains the
+        ORIGINAL content (not the encrypted version).
+        """
+        print("\n" + "=" * 60)
+        print("TEST 3: Proactive Backup Timing (Flaw #1 Fix)")
+        print("=" * 60)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bm = BackupManager(backup_dir=os.path.join(tmpdir, "backups"))
+
+            # Step 1: Create original file
+            test_file = os.path.join(tmpdir, "document.txt")
+            original_content = "This is the original document content."
+            with open(test_file, 'w') as f:
+                f.write(original_content)
+
+            # Step 2: Create proactive backup (BEFORE any attack)
+            proactive = bm.maintain_proactive_backup(test_file)
+            assert proactive is not None, "Proactive backup creation failed"
+            print(f"  Proactive backup created: {os.path.basename(proactive)}")
+
+            # Step 3: Simulate ransomware overwriting the file
+            with open(test_file, 'wb') as f:
+                f.write(secrets.token_bytes(1024))
+            print("  File overwritten with random bytes (simulated encryption)")
+
+            # Step 4: Get proactive backup and verify it has ORIGINAL content
+            backup_path = bm.get_proactive_backup(test_file)
+            assert backup_path is not None, "Proactive backup not found"
+
+            with open(backup_path, 'r') as f:
+                restored_content = f.read()
+
+            if restored_content == original_content:
+                print("  ✅ PASS | Proactive backup contains ORIGINAL content")
+
+                # Step 5: Restore from proactive backup
+                shutil.copy2(backup_path, test_file)
+                with open(test_file, 'r') as f:
+                    final_content = f.read()
+                if final_content == original_content:
+                    print("  ✅ PASS | File restored successfully from proactive backup")
+                    return True
+                else:
+                    print("  ❌ FAIL | Restored content doesn't match original")
+                    return False
+            else:
+                print("  ❌ FAIL | Proactive backup contains MODIFIED content!")
+                return False
+
+    def run_process_timing_test(self):
+        """
+        TEST: find_recent_writers no longer filters by creation time.
+
+        Verifies that long-running processes are not skipped.
+        """
+        print("\n" + "=" * 60)
+        print("TEST 4: Process Timing Fix (Flaw #4)")
+        print("=" * 60)
+
+        import inspect
+        pm = ProcessMonitor()
+
+        # Check that the source code does NOT contain 'create_time' filter
+        source = inspect.getsource(pm.find_recent_writers)
+        has_create_time_filter = 'proc.create_time()' in source or \
+                                 'create_time' in source
+
+        if not has_create_time_filter:
+            print("  ✅ PASS | find_recent_writers does not filter by create_time")
+            return True
+        else:
+            print("  ❌ FAIL | find_recent_writers still uses create_time filter")
+            return False
+
+    def run_sigstop_test(self):
+        """
+        TEST: SIGSTOP-first strategy exists in FileMonitor.
+
+        Verifies that _freeze_process and _resume_process methods exist
+        and that the analysis pipeline uses them.
+        """
+        print("\n" + "=" * 60)
+        print("TEST 5: SIGSTOP-First Strategy (Flaw #5)")
+        print("=" * 60)
+
+        import inspect
+        all_passed = True
+
+        # Check FileMonitor has freeze/resume methods
+        has_freeze = hasattr(FileMonitor, '_freeze_process')
+        has_resume = hasattr(FileMonitor, '_resume_process')
+        has_frozen_tracking = hasattr(FileMonitor, '_resume_all_frozen')
+
+        status = "✅ PASS" if has_freeze else "❌ FAIL"
+        print(f"  {status} | _freeze_process method exists")
+        if not has_freeze:
+            all_passed = False
+
+        status = "✅ PASS" if has_resume else "❌ FAIL"
+        print(f"  {status} | _resume_process method exists")
+        if not has_resume:
+            all_passed = False
+
+        status = "✅ PASS" if has_frozen_tracking else "❌ FAIL"
+        print(f"  {status} | _resume_all_frozen method exists")
+        if not has_frozen_tracking:
+            all_passed = False
+
+        # Check that _analyze_file uses SIGSTOP (resume on safe, kill on threat)
+        source = inspect.getsource(FileMonitor._analyze_file)
+        has_resume_call = '_resume_process' in source
+        has_sigkill = 'SIGKILL' in source
+
+        status = "✅ PASS" if has_resume_call else "❌ FAIL"
+        print(f"  {status} | _analyze_file resumes safe processes")
+        if not has_resume_call:
+            all_passed = False
+
+        status = "✅ PASS" if has_sigkill else "❌ FAIL"
+        print(f"  {status} | _analyze_file can SIGKILL malicious processes")
+        if not has_sigkill:
+            all_passed = False
+
+        # Check proactive backup is used in restore path
+        has_proactive_restore = 'get_proactive_backup' in source
+        status = "✅ PASS" if has_proactive_restore else "❌ FAIL"
+        print(f"  {status} | _analyze_file restores from proactive backup")
+        if not has_proactive_restore:
+            all_passed = False
+
+        return all_passed
+
+    def run_ebpf_fullpath_test(self):
+        """
+        TEST: eBPF event struct includes fullpath field.
+
+        Verifies the EBPFFileEvent dataclass has fullpath and rapid_writes.
+        """
+        print("\n" + "=" * 60)
+        print("TEST 6: eBPF Full Path Resolution (Flaw #3)")
+        print("=" * 60)
+
+        from core.EBPFMonitor import EBPFFileEvent
+        import dataclasses
+
+        all_passed = True
+        fields = {f.name for f in dataclasses.fields(EBPFFileEvent)}
+
+        for field_name in ['fullpath', 'rapid_writes']:
+            has_field = field_name in fields
+            status = "✅ PASS" if has_field else "❌ FAIL"
+            print(f"  {status} | EBPFFileEvent has '{field_name}' field")
+            if not has_field:
+                all_passed = False
+
+        # Test creating an event with fullpath
+        evt = EBPFFileEvent(
+            pid=1234, uid=1000, event_type=1, bytes_written=512,
+            process_name="test", filename="doc.txt",
+            fullpath="/home/user/doc.txt", rapid_writes=True
+        )
+        has_path = evt.fullpath == "/home/user/doc.txt"
+        has_rapid = evt.rapid_writes is True
+
+        status = "✅ PASS" if has_path else "❌ FAIL"
+        print(f"  {status} | fullpath correctly stored")
+        if not has_path:
+            all_passed = False
+
+        status = "✅ PASS" if has_rapid else "❌ FAIL"
+        print(f"  {status} | rapid_writes correctly stored")
+        if not has_rapid:
+            all_passed = False
+
+        return all_passed
+
     def run_monitor_test(self):
         """Test file monitoring with simulated ransomware."""
         print("\n" + "=" * 60)
-        print("TEST 2: File Monitor + Detection")
+        print("TEST 7: File Monitor + Detection (Integration)")
         print("=" * 60)
         
         self.alerts.clear()
@@ -264,7 +497,6 @@ class IntegrationTest:
                 return False
         finally:
             # Cleanup test files
-            import shutil
             if tmpdir.exists():
                 shutil.rmtree(tmpdir)
     
@@ -272,10 +504,16 @@ class IntegrationTest:
         """Run all integration tests."""
         print("\n" + "=" * 60)
         print("🛡️  RANSOMWARE GUARD - INTEGRATION TESTS")
+        print("   Testing all 5 critical flaw fixes")
         print("=" * 60)
         
         results = {
             'entropy_test': self.run_entropy_test(),
+            'interpreter_trust': self.run_interpreter_trust_test(),
+            'proactive_backup': self.run_proactive_backup_test(),
+            'process_timing': self.run_process_timing_test(),
+            'sigstop_strategy': self.run_sigstop_test(),
+            'ebpf_fullpath': self.run_ebpf_fullpath_test(),
             'monitor_test': self.run_monitor_test(),
         }
         

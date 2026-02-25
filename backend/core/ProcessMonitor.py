@@ -77,14 +77,26 @@ class ProcessMonitor:
         'libreoffice', 'soffice.bin',
         # Archive tools (create compressed/encrypted files)
         'zip', 'unzip', 'gzip', 'bzip2', 'xz', '7z', 'tar',
-        # Development tools
-        'python', 'python3', 'node', 'npm', 'java', 'javac',
+        # Development tools (compilers only — interpreters handled separately)
         'gcc', 'g++', 'clang', 'rustc', 'cargo', 'go',
         'code', 'code-oss', 'vscodium',  # VS Code
         # Package managers
         'apt', 'apt-get', 'dpkg', 'dnf', 'yum', 'pacman', 'snap',
         # Backup tools
         'rsync', 'borg', 'restic', 'duplicity',
+    }
+
+    # Script interpreters: NOT trusted by default.
+    # Ransomware can run as python/node/java scripts.
+    # These are evaluated by the entropy pipeline like any other process.
+    SCRIPT_INTERPRETERS = {
+        'python', 'python3', 'python3.8', 'python3.9', 'python3.10',
+        'python3.11', 'python3.12', 'python3.13',
+        'node', 'npm', 'npx', 'deno', 'bun',
+        'java', 'javac',
+        'ruby', 'perl', 'php', 'lua',
+        'bash', 'sh', 'zsh', 'fish',
+        'powershell', 'pwsh',
     }
     
     def __init__(self, whitelist: Optional[Set[str]] = None, test_mode: bool = False):
@@ -237,31 +249,41 @@ class ProcessMonitor:
         
         return None
     
-    def find_recent_writers(self, file_path: str, time_window: float = 2.0) -> List[ProcessInfo]:
+    def find_recent_writers(self, file_path: str, time_window: float = 5.0) -> List[ProcessInfo]:
         """
-        Find processes that recently modified files in the same directory.
-        Useful when the exact writing process can't be determined.
-        
+        Find processes that have files open in the same directory.
+
+        FIX: No longer filters by process creation time, which missed
+        long-running processes (e.g., a Python shell encrypting files).
+        Instead checks if the process currently has files open in the
+        target directory, and optionally filters by file mtime.
+
         Args:
             file_path: Path to the suspicious file
-            time_window: How far back to look (seconds)
-            
+            time_window: How far back to check file mtime (seconds)
+
         Returns:
             List of ProcessInfo for suspicious processes
         """
-        directory = os.path.dirname(os.path.abspath(file_path))
+        abs_path = os.path.abspath(file_path)
+        directory = os.path.dirname(abs_path)
         current_time = time.time()
         suspects = []
-        
-        for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+
+        # Check file mtime to scope the search
+        try:
+            file_mtime = os.path.getmtime(abs_path)
+        except OSError:
+            file_mtime = current_time
+
+        for proc in psutil.process_iter(['pid', 'name']):
             try:
-                # CRITICAL FIX: Now actually uses time_window parameter!
-                # Skip processes older than the time window
-                if current_time - proc.create_time() > time_window:
+                # Skip our own process
+                if proc.pid == os.getpid():
                     continue
-                    
+
                 open_files = proc.open_files()
-                
+
                 for f in open_files:
                     # Check if process has files open in same directory
                     if os.path.dirname(f.path) == directory:
@@ -269,12 +291,12 @@ class ProcessMonitor:
                         if info and info not in suspects:
                             suspects.append(info)
                         break
-                        
+
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
             except Exception:
                 continue
-        
+
         return suspects
     
     def _get_process_info(self, proc: psutil.Process) -> Optional[ProcessInfo]:
@@ -303,26 +325,70 @@ class ProcessMonitor:
     def is_protected(self, process_info: ProcessInfo) -> bool:
         """Check if a process should be protected from termination."""
         name_lower = process_info.name.lower()
-        
+
         # Check system-critical processes (ALWAYS protected)
         if name_lower in self.PROTECTED_PROCESSES:
             return True
-        
+
+        # Script interpreters are NEVER trusted — ransomware can run as
+        # python/node/java scripts. Evaluate them like any other process.
+        if name_lower in self.SCRIPT_INTERPRETERS:
+            return False
+
         # Check trusted applications (skip in test mode)
         if not self.test_mode and name_lower in self.TRUSTED_APPLICATIONS:
             return True
-        
+
         # Check user whitelist
         if name_lower in self.whitelist:
             return True
-        
+
         # Protect root/system-owned processes (optional safety)
         if process_info.username in ('root', 'system'):
             # Only protect if it's a system process, not a script run as root
             if process_info.exe and process_info.exe.startswith(('/usr', '/bin', '/sbin')):
                 return True
-        
+
         return False
+
+    @staticmethod
+    def _resolve_interpreter_script(process_info: ProcessInfo) -> Optional[str]:
+        """
+        Extract the script path from a script interpreter's command line.
+
+        Examples:
+            ['python3', 'ransomware.py']           → 'ransomware.py'
+            ['node', '/tmp/evil.js']                → '/tmp/evil.js'
+            ['java', '-jar', 'malware.jar']         → 'malware.jar'
+            ['python3', '-c', 'import os; ...']     → None (inline code)
+
+        Returns:
+            Script file path, or None if it can't be determined.
+        """
+        if not process_info.cmdline or len(process_info.cmdline) < 2:
+            return None
+
+        cmdline = process_info.cmdline
+        name_lower = process_info.name.lower()
+
+        # Skip flags to find the script argument
+        for i, arg in enumerate(cmdline[1:], 1):
+            # Skip interpreter flags
+            if arg.startswith('-'):
+                # -c / -e = inline code, not a file
+                if arg in ('-c', '-e', '--eval'):
+                    return None
+                continue
+            # Java special case: -jar flag
+            if name_lower in ('java',) and i > 0 and cmdline[i-1] == '-jar':
+                return arg
+            # First non-flag argument is likely the script
+            if os.path.splitext(arg)[1] or os.path.sep in arg or arg.endswith('.py') or arg.endswith('.js'):
+                return arg
+            # Could be a module name (python -m module)
+            return arg
+
+        return None
     
     def terminate_process(self, process_info: ProcessInfo, force: bool = False) -> Dict:
         """
