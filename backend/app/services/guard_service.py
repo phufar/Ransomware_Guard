@@ -80,8 +80,9 @@ class GuardService:
         self.process_monitor = ProcessMonitor()
         
         # Create alert callback that broadcasts via WebSocket
-        def alert_callback(file_path: str, entropy: float):
-            result = self.process_monitor.handle_ransomware_alert(file_path, entropy)
+        def alert_callback(file_path: str, entropy: float, result=None):
+            if result is None:
+                result = self.process_monitor.handle_ransomware_alert(file_path, entropy)
             self._handle_alert(file_path, entropy, result)
         
         self.file_monitor = FileMonitor(

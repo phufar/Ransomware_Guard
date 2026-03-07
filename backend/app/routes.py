@@ -171,179 +171,92 @@ async def stop_guard(request: Request):
 @router.post("/test/alert")
 async def trigger_test_alert(request: Request):
     """
-    Trigger a REAL ransomware simulation test.
-    Creates a normal file, then encrypts it (overwrites with random bytes)
-    to simulate actual ransomware behavior and trigger the detection pipeline.
-    
-    When the guard is running: writes inside the watch path so FileMonitor
-    detects the file and ProcessMonitor identifies the writing process.
-    
-    When the guard is NOT running: uses a temp directory with manual
-    entropy calculation and WebSocket broadcast.
-    """ 
-    from core.EntropyCalculator import EntropyCalculator
-    
+    Trigger a ransomware simulation test.
+
+    Creates a test folder with document files, then spawns a SUBPROCESS
+    to encrypt them. The subprocess has a different PID so the guard's
+    eBPF monitor (which ignores its own PID) detects the writes naturally.
+    """
+    import subprocess
+
     guard_service = request.app.state.guard_service
-    websocket_manager = request.app.state.websocket_manager
-    
+
     timestamp = int(_time.time())
-    victim_name = f"document_{timestamp}.txt"
-    encrypted_name = f"{victim_name}.encrypted"
-    
+
+    # --- Determine work directory ---
     if guard_service.is_running and guard_service.watch_path:
-        # === GUARD IS RUNNING: Write inside watch path for full pipeline ===
-        watch_dir = Path(guard_service.watch_path)
-        work_dir = watch_dir / "ransomware_test"
-        
-        try:
-            work_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # Watch path not writable or doesn't exist — fall back to system temp dir
-            work_dir = Path(tempfile.mkdtemp(prefix="ransomware_test_"))
-        
-        try:
-            # Step 1: Create a normal text file (the victim)
-            victim_path = work_dir / victim_name
-            victim_path.write_text("This is a normal document with important content. " * 500)
-            original_size = victim_path.stat().st_size
-            
-            # Step 2: "Encrypt" it — overwrite with random bytes (like real ransomware)
-            encrypted_path = work_dir / encrypted_name
-            
-            # Pre-register current process as the file writer in guard's ProcessMonitor
-            # This simulates what happens in real ransomware: the writing process is
-            # captured WHILE the file handle is open. Since write_bytes() is synchronous
-            # and completes before watchdog fires, we register manually.
-            if guard_service.process_monitor:
-                abs_encrypted = str(encrypted_path.resolve())
-                current_pid = _os.getpid()
-                current_time = _time.time()
-                proc_name = "python3"
-                try:
-                    proc_name = psutil.Process(current_pid).name()
-                except Exception:
-                    pass
-                
-                with guard_service.process_monitor._cache_lock:
-                    if abs_encrypted not in guard_service.process_monitor.recent_file_writers:
-                        guard_service.process_monitor.recent_file_writers[abs_encrypted] = []
-                    guard_service.process_monitor.recent_file_writers[abs_encrypted].append(
-                        (current_pid, proc_name, current_time)
-                    )
-                    # Also register by directory for fallback
-                    dir_path = str(work_dir.resolve())
-                    if dir_path not in guard_service.process_monitor.recent_dir_writers:
-                        guard_service.process_monitor.recent_dir_writers[dir_path] = []
-                    guard_service.process_monitor.recent_dir_writers[dir_path].append(
-                        (current_pid, proc_name, current_time)
-                    )
-            
-            encrypted_data = secrets.token_bytes(original_size)
-            encrypted_path.write_bytes(encrypted_data)
-            victim_path.unlink()  # ransomware deletes the original
-            
-            # Step 3: Wait for FileMonitor + ProcessMonitor pipeline to detect it
-            # The pipeline: FileMonitor -> track_file_write -> entropy check ->
-            #               ProcessMonitor.handle_ransomware_alert -> _handle_alert -> WebSocket
-            triggered_alert = None
-            for _ in range(6):  # Wait up to 3 seconds (6 x 0.5s)
-                await asyncio.sleep(0.5)
-                for alert in reversed(guard_service.alerts):
-                    if encrypted_name in alert.get('file_path', ''):
-                        triggered_alert = alert
-                        break
-                if triggered_alert:
-                    break
-            
-            if triggered_alert:
-                # Full pipeline worked — alert has real process info
-                return {
-                    "success": True,
-                    "message": "Ransomware simulation: full pipeline detected the threat",
-                    "mode": "guard_pipeline",
-                    "original_file": victim_name,
-                    "encrypted_file": str(encrypted_path),
-                    "alert": triggered_alert
-                }
-            else:
-                # Pipeline didn't fire (e.g. FileMonitor filtered it) — manual fallback
-                calc = EntropyCalculator(threshold=7.5)
-                encrypted_result = calc.calculate_file_entropy(str(encrypted_path))
-                
-                guard_service.alert_id_counter += 1
-                alert = {
-                    'id': guard_service.alert_id_counter,
-                    'file_path': str(encrypted_path),
-                    'entropy': encrypted_result['entropy'],
-                    'timestamp': _time.time(),
-                    'process_found': False,
-                    'process_name': None,
-                    'process_pid': None,
-                    'action_taken': None,
-                    'action_success': False
-                }
-                guard_service.alerts.append(alert)
-                guard_service.stats['threats_detected'] += 1
-                guard_service.stats['alerts_total'] += 1
-                await websocket_manager.broadcast_alert(alert)
-                
-                return {
-                    "success": True,
-                    "message": "Ransomware simulation: manual fallback (pipeline timeout)",
-                    "mode": "manual_fallback",
-                    "original_file": victim_name,
-                    "encrypted_file": str(encrypted_path),
-                    "entropy": encrypted_result['entropy'],
-                    "alert": alert
-                }
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=f"Cannot write to watch path: {e}")
-    
+        work_dir = Path(guard_service.watch_path) / "ransomware_test"
     else:
-        # === GUARD NOT RUNNING: temp dir with manual entropy + broadcast ===
         work_dir = Path(tempfile.mkdtemp(prefix="ransomware_test_"))
-        
-        try:
-            victim_path = work_dir / victim_name
-            victim_path.write_text("This is a normal document with important content. " * 500)
-            original_size = victim_path.stat().st_size
-            
-            encrypted_path = work_dir / encrypted_name
-            encrypted_data = secrets.token_bytes(original_size)
-            encrypted_path.write_bytes(encrypted_data)
-            victim_path.unlink()
-            
-            calc = EntropyCalculator(threshold=7.5)
-            encrypted_result = calc.calculate_file_entropy(str(encrypted_path))
-            
-            guard_service.alert_id_counter += 1
-            alert = {
-                'id': guard_service.alert_id_counter,
-                'file_path': str(encrypted_path),
-                'entropy': encrypted_result['entropy'],
-                'timestamp': _time.time(),
-                'process_found': False,
-                'process_name': None,
-                'process_pid': None,
-                'action_taken': None,
-                'action_success': False
-            }
-            
-            guard_service.alerts.append(alert)
-            guard_service.stats['threats_detected'] += 1
-            guard_service.stats['alerts_total'] += 1
-            await websocket_manager.broadcast_alert(alert)
-            
-            return {
-                "success": True,
-                "message": "Ransomware simulation: alert broadcast (guard not running)",
-                "mode": "standalone",
-                "original_file": victim_name,
-                "encrypted_file": str(encrypted_path),
-                "entropy": encrypted_result['entropy'],
-                "suspicious": encrypted_result['suspicious'],
-                "alert": alert
-            }
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Cannot create test dir: {e}")
+
+    # --- Step 1: Create victim files (in-process, these are normal writes) ---
+    victim_files = {
+        f"report_{timestamp}.docx": "Quarterly financial report with sensitive data. " * 200,
+        f"photo_{timestamp}.jpg": "JFIF" + ("X" * 5000),
+        f"database_{timestamp}.csv": ("id,name,email,balance\n" + "1,John,john@example.com,50000\n" * 300),
+        f"notes_{timestamp}.txt": "Meeting notes from the board session. " * 150,
+        f"presentation_{timestamp}.pptx": "Slide content with charts and analysis. " * 250,
+    }
+
+    created_files = []
+    for name, content in victim_files.items():
+        path = work_dir / name
+        path.write_text(content)
+        created_files.append({"name": name, "path": str(path), "size": path.stat().st_size})
+
+    # --- Step 2: Encrypt files in a SUBPROCESS (different PID = detected by guard) ---
+    # The subprocess writes slowly (like real ransomware iterating through files)
+    # so the guard can resolve paths via /proc/<pid>/fd while the process is alive.
+    encrypt_script = f"""
+import os, secrets, sys, time
+work_dir = {str(work_dir)!r}
+files = {[f["name"] for f in created_files]!r}
+for name in files:
+    original = os.path.join(work_dir, name)
+    encrypted = original + ".encrypted"
+    try:
+        size = os.path.getsize(original)
+        data = secrets.token_bytes(size)
+        with open(encrypted, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        time.sleep(0.5)
+        os.unlink(original)
+        print(f"Encrypted: {{name}} -> {{name}}.encrypted")
+    except Exception as e:
+        print(f"Error: {{name}}: {{e}}", file=sys.stderr)
+time.sleep(1)
+"""
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", encrypt_script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    encrypted_files = [
+        {
+            "original": f["name"],
+            "encrypted": f"{f['name']}.encrypted",
+            "path": str(Path(f["path"]).parent / f"{f['name']}.encrypted"),
+            "size": f["size"],
+        }
+        for f in created_files
+    ]
+
+    return {
+        "success": True,
+        "message": f"Ransomware simulation launched: {len(encrypted_files)} files being encrypted by subprocess PID {proc.pid}",
+        "test_dir": str(work_dir),
+        "ransomware_pid": proc.pid,
+        "files_created": len(created_files),
+        "files_encrypting": len(encrypted_files),
+        "encrypted_files": encrypted_files,
+    }
 

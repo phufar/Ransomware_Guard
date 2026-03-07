@@ -550,7 +550,15 @@ class ProcessMonitor:
                     f"(PID: {pid})"
                 )
         except psutil.NoSuchProcess:
-            logger.warning(f"eBPF PID {pid} no longer exists")
+            logger.warning(f"eBPF PID {pid} no longer exists (already exited)")
+            # Process already exited, but we still know the PID from eBPF
+            result['process_found'] = True
+            result['process_info'] = {'pid': pid, 'name': 'exited'}
+            result['action_taken'] = {
+                'action': 'none', 'success': True,
+                'message': f'Process {pid} already exited',
+                'pid': pid, 'name': 'exited', 'timestamp': time.time(),
+            }
         except Exception as e:
             logger.error(f"Error handling eBPF alert for PID {pid}: {e}")
 

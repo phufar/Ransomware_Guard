@@ -69,6 +69,7 @@ struct file_event_t {
     u32 rapid_writes;   // 1 if PID has burst-write pattern (anomaly flag)
     char comm[16];      // Process name (command)
     char filename[256]; // Filename (basename from dentry)
+    char oldname[256];  // Original filename (only for RENAME events)
 };
 
 // Perf ring buffer: kernel writes events, user-space reads them
@@ -89,7 +90,15 @@ int trace_vfs_write(struct pt_regs *ctx,
                     const char __user *buf,
                     size_t count) {
 
-    if (count < 64)
+    // Filter by file type: only track writes to regular files.
+    // Skips sockets (TCP/MPTCP), pipes, ttys, and device files.
+    struct inode *ino = NULL;
+    bpf_probe_read_kernel(&ino, sizeof(ino), &file->f_inode);
+    if (!ino)
+        return 0;
+    unsigned short mode = 0;
+    bpf_probe_read_kernel(&mode, sizeof(mode), &ino->i_mode);
+    if ((mode & 0xF000) != 0x8000)  // S_IFREG = 0100000 = 0x8000
         return 0;
 
     int zero = 0;
@@ -158,6 +167,10 @@ TRACEPOINT_PROBE(syscalls, sys_enter_renameat2) {
     event->bytes_written = 0;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 
+    // Capture BOTH names: old (original) and new (renamed to)
+    // Critical for detecting: report.docx -> report.docx.encrypted
+    bpf_probe_read_user_str(&event->oldname, sizeof(event->oldname),
+                            (void *)args->oldname);
     bpf_probe_read_user_str(&event->filename, sizeof(event->filename),
                             (void *)args->newname);
 
@@ -208,8 +221,9 @@ class EBPFFileEvent:
         event_type:     EVENT_WRITE, EVENT_RENAME, or EVENT_UNLINK
         bytes_written:  Number of bytes written (0 for rename/unlink)
         process_name:   Name of the process (from task_struct->comm)
-        filename:       Filename (basename from dentry, not full path)
-        fullpath:       Full path reconstructed from dentry chain walk
+        filename:       Filename (new name for RENAME, basename for others)
+        oldname:        Original filename before rename (RENAME events only)
+        fullpath:       Full path resolved via /proc/<pid>/fd
         rapid_writes:   True if PID exhibits burst-write pattern (anomaly)
         timestamp:      Time the event was received in user-space
     """
@@ -219,6 +233,7 @@ class EBPFFileEvent:
     bytes_written: int
     process_name: str
     filename: str
+    oldname: str = ""
     fullpath: str = ""
     rapid_writes: bool = False
     timestamp: float = field(default_factory=time.time)
@@ -230,9 +245,11 @@ class EBPFFileEvent:
     def __repr__(self):
         path_display = self.fullpath if self.fullpath else self.filename
         rapid = " RAPID!" if self.rapid_writes else ""
+        rename_info = f" (was:{self.oldname})" if self.oldname else ""
         return (f"EBPFFileEvent({self.event_type_name} | "
                 f"PID:{self.pid} {self.process_name} | "
-                f"file:{path_display} | {self.bytes_written}B{rapid})")
+                f"file:{path_display}{rename_info} | "
+                f"{self.bytes_written}B{rapid})")
 
 
 # Type alias for the event callback
@@ -526,6 +543,12 @@ class EBPFMonitor:
                 self.stats['events_filtered'] += 1
                 return
 
+            # Parse old name for rename events
+            oldname = ""
+            if hasattr(event, 'oldname'):
+                oldname = event.oldname.decode('utf-8', errors='replace') \
+                               .rstrip('\x00')
+
             # Resolve full path via /proc (since BPF only gives basename)
             fullpath = self._resolve_path(event.pid, filename)
 
@@ -537,6 +560,7 @@ class EBPFMonitor:
                 bytes_written=event.bytes_written,
                 process_name=process_name,
                 filename=filename,
+                oldname=oldname,
                 fullpath=fullpath,
                 rapid_writes=rapid_writes,
             )

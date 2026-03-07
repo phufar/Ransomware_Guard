@@ -121,6 +121,10 @@ class FileMonitor:
         self._frozen_pids: Set[int] = set()
         self._frozen_lock = threading.Lock()
 
+        # eBPF PID cache: maps basename → (pid, process_name, timestamp)
+        # Used to recover PID when Watchdog detects a file that eBPF also saw
+        self._ebpf_pid_cache: dict = {}
+
     def start(self):
         """
         Start monitoring. Tries eBPF first, falls back to Watchdog.
@@ -392,6 +396,9 @@ class FileMonitor:
         if self._should_ignore(filename):
             return
 
+        # Always cache basename → PID (for Watchdog cross-reference)
+        self._ebpf_pid_cache[filename] = (event.pid, event.process_name, time.time())
+
         # eBPF provides full path if available (from dentry walk),
         # otherwise falls back to basename resolution.
         full_path = None
@@ -514,6 +521,20 @@ class FileMonitor:
                     pid = None
                     process_name = None
 
+                # If pid is None (Watchdog), try eBPF PID cache
+                if pid is None:
+                    basename = os.path.basename(file_path)
+                    cached = self._ebpf_pid_cache.pop(basename, None)
+                    if cached:
+                        cache_pid, cache_pname, cache_time = cached
+                        # Only use if recent (within 5 seconds)
+                        if time.time() - cache_time < 5.0:
+                            pid = cache_pid
+                            process_name = cache_pname
+                            # Try to freeze this process too
+                            self._freeze_process(pid)
+                            logger.info(f"Recovered PID {pid} ({cache_pname}) from eBPF cache for {basename}")
+
                 # Debounce: skip if analyzed recently
                 now = time.time()
                 if file_path in self._last_checked:
@@ -611,6 +632,7 @@ class FileMonitor:
                 )
 
                 # Step 3a: Kill the responsible process (already frozen)
+                kill_result = None
                 if self.process_monitor and pid:
                     # eBPF path: use PID directly (no /proc scanning)
                     kill_result = self.process_monitor \
@@ -620,7 +642,7 @@ class FileMonitor:
                     logger.info(f"Kill result: {kill_result}")
                 elif self.process_monitor:
                     # Watchdog path: scan /proc to find the writer
-                    self.process_monitor.handle_ransomware_alert(
+                    kill_result = self.process_monitor.handle_ransomware_alert(
                         file_path, result['entropy']
                     )
                 elif pid:
@@ -628,6 +650,11 @@ class FileMonitor:
                     try:
                         os.kill(pid, signal.SIGKILL)
                         logger.info(f"Process killed directly: PID {pid}")
+                        kill_result = {
+                            'process_found': True,
+                            'process_info': {'pid': pid, 'name': process_name or 'unknown'},
+                            'action_taken': {'action': 'kill', 'success': True},
+                        }
                     except OSError:
                         pass
 
@@ -637,12 +664,33 @@ class FileMonitor:
 
                 # Step 3b: Restore file from PROACTIVE backup (pre-write copy)
                 proactive_backup = self.backup_manager.get_proactive_backup(file_path)
+
+                # If no backup for this file, try the original filename
+                # (ransomware often creates .encrypted/.locked/.crypto copies)
+                original_path = None
+                if not proactive_backup:
+                    RANSOMWARE_EXTENSIONS = {
+                        '.encrypted', '.locked', '.crypto', '.crypt',
+                        '.enc', '.ransom', '.pay', '.locky',
+                    }
+                    base, ext = os.path.splitext(file_path)
+                    if ext.lower() in RANSOMWARE_EXTENSIONS:
+                        original_path = base
+                        proactive_backup = self.backup_manager.get_proactive_backup(original_path)
+
                 if proactive_backup:
-                    # Use proactive backup — this is the PRE-MODIFICATION copy
+                    restore_target = original_path if original_path else file_path
                     try:
                         import shutil
-                        shutil.copy2(proactive_backup, file_path)
-                        logger.info(f"File restored from PROACTIVE backup: {file_path}")
+                        shutil.copy2(proactive_backup, restore_target)
+                        logger.info(f"File restored from PROACTIVE backup: {restore_target}")
+                        # Remove the encrypted copy if we restored the original
+                        if original_path and os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                                logger.info(f"Removed encrypted copy: {file_path}")
+                            except OSError:
+                                pass
                     except Exception as e:
                         logger.error(f"Proactive restore failed: {e}")
                         # Fallback: try reactive backup
@@ -659,7 +707,15 @@ class FileMonitor:
 
                 # Trigger alert callback (for API/WebSocket broadcast)
                 if self.callback_alert:
-                    self.callback_alert(file_path, result['entropy'])
+                    # Ensure PID info reaches the frontend even if process
+                    # handling didn't produce a result
+                    if kill_result is None and pid:
+                        kill_result = {
+                            'process_found': True,
+                            'process_info': {'pid': pid, 'name': process_name or 'unknown'},
+                            'action_taken': None,
+                        }
+                    self.callback_alert(file_path, result['entropy'], kill_result)
 
             else:
                 # Step 4: Entropy is normal — resume the frozen process
