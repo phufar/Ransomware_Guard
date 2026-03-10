@@ -25,6 +25,7 @@ ENV/
 # Logs
 logs/
 *.log
+.setup.log
 
 # Environment
 .env

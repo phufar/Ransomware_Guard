@@ -8,6 +8,9 @@ export default defineConfig({
             preprocess: sveltePreprocess()
         })
     ],
+    build: {
+        emptyOutDir: false
+    },
     server: {
         port: 5173,
         proxy: {

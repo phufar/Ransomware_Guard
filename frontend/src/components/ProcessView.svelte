@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import { Activity, Clock, RefreshCw } from "lucide-svelte";
 
     interface Process {
         pid: number;
@@ -13,19 +14,8 @@
         is_trusted: boolean;
     }
 
-    interface ActionLog {
-        pid: number;
-        name: string;
-        action: string;
-        success: boolean;
-        message: string;
-        timestamp: number;
-    }
-
     export let processes: Process[] = [];
     export let guardRunning: boolean = false;
-
-    let actionLog: ActionLog[] = [];
     let searchQuery = "";
     let sortField: keyof Process = "cpu_percent";
     let sortAsc = false;
@@ -77,19 +67,6 @@
         }
     }
 
-    async function fetchActionLog() {
-        try {
-            const res = await fetch("/api/processes/action-log?limit=20");
-            actionLog = await res.json();
-        } catch (e) {
-            console.error("Failed to fetch action log:", e);
-        }
-    }
-
-    function formatTime(timestamp: number): string {
-        return new Date(timestamp * 1000).toLocaleTimeString();
-    }
-
     function getStatusBadge(p: Process): { text: string; cls: string } {
         if (p.is_protected) return { text: "PROTECTED", cls: "protected" };
         if (p.is_trusted) return { text: "TRUSTED", cls: "trusted" };
@@ -98,13 +75,11 @@
 
     onMount(() => {
         fetchProcesses();
-        fetchActionLog();
 
         const interval = setInterval(() => {
             if (!guardRunning) {
                 fetchProcesses();
             }
-            fetchActionLog();
         }, 5000);
 
         return () => clearInterval(interval);
@@ -115,7 +90,9 @@
     <!-- Process Table Section -->
     <section class="process-table-section">
         <div class="section-header">
-            <h2>⚙️ Running Processes</h2>
+            <h2 style="display: flex; align-items: center; gap: 0.5rem;">
+                <Activity size={18} /> Running Processes
+            </h2>
             <div class="controls-row">
                 <input
                     type="text"
@@ -127,8 +104,14 @@
                     class="refresh-btn"
                     on:click={fetchProcesses}
                     disabled={loading}
+                    style="display: flex; align-items: center; gap: 0.5rem;"
                 >
-                    {loading ? "⏳" : "🔄"} Refresh
+                    {#if loading}
+                        <Clock size={16} />
+                    {:else}
+                        <RefreshCw size={16} />
+                    {/if}
+                    Refresh
                 </button>
             </div>
         </div>
@@ -206,39 +189,6 @@
             >
         </div>
     </section>
-
-    <!-- Action Log Section -->
-    <section class="action-log-section">
-        <h2>📋 Action Log</h2>
-        {#if actionLog.length === 0}
-            <div class="empty-state">
-                <span class="icon">📭</span>
-                <p>No actions taken yet</p>
-            </div>
-        {:else}
-            <div class="action-log">
-                {#each actionLog as entry}
-                    <div class="log-entry" class:success={entry.success}>
-                        <div class="log-header">
-                            <span class="log-action"
-                                >{entry.success ? "✅" : "❌"}
-                                {entry.action.toUpperCase()}</span
-                            >
-                            <span class="log-time"
-                                >{formatTime(entry.timestamp)}</span
-                            >
-                        </div>
-                        <div class="log-body">
-                            <span class="log-process"
-                                >{entry.name} (PID: {entry.pid})</span
-                            >
-                            <span class="log-message">{entry.message}</span>
-                        </div>
-                    </div>
-                {/each}
-            </div>
-        {/if}
-    </section>
 </div>
 
 <style>
@@ -246,14 +196,20 @@
         display: flex;
         flex-direction: column;
         gap: 1.5rem;
+        flex: 1;
+        min-height: 0;
     }
 
     section {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 16px;
+        background: rgba(0, 0, 0, 0.4);
+        border-radius: 12px;
         padding: 1.5rem;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.05);
         backdrop-filter: blur(10px);
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
     }
 
     h2 {
@@ -319,7 +275,7 @@
     /* Table */
     .table-wrapper {
         overflow-x: auto;
-        max-height: 500px;
+        flex: 1;
         overflow-y: auto;
     }
 
@@ -336,7 +292,7 @@
     }
 
     th {
-        background: #1a1a2e;
+        background: #0a0a0a;
         padding: 0.7rem 0.75rem;
         text-align: left;
         color: #888;
@@ -443,94 +399,18 @@
         text-align: right;
     }
 
-    /* Action log */
-    .action-log-section h2 {
-        margin-bottom: 1.25rem;
-    }
-
-    .empty-state {
-        text-align: center;
-        padding: 2.5rem;
-        color: #888;
-    }
-
-    .empty-state .icon {
-        font-size: 2.5rem;
-        display: block;
-        margin-bottom: 0.75rem;
-    }
-
-    .action-log {
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-        max-height: 300px;
-        overflow-y: auto;
-    }
-
-    .log-entry {
-        background: rgba(255, 68, 68, 0.08);
-        border: 1px solid rgba(255, 68, 68, 0.2);
-        border-radius: 10px;
-        padding: 0.85rem;
-    }
-
-    .log-entry.success {
-        background: rgba(0, 255, 136, 0.05);
-        border-color: rgba(0, 255, 136, 0.2);
-    }
-
-    .log-header {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 0.5rem;
-        font-size: 0.85rem;
-    }
-
-    .log-action {
-        font-weight: 600;
-        color: #ff6b6b;
-    }
-
-    .log-entry.success .log-action {
-        color: #00ff88;
-    }
-
-    .log-time {
-        color: #888;
-    }
-
-    .log-body {
-        display: flex;
-        gap: 1rem;
-        font-size: 0.85rem;
-        flex-wrap: wrap;
-    }
-
-    .log-process {
-        color: #00d9ff;
-        font-family: monospace;
-    }
-
-    .log-message {
-        color: #aaa;
-    }
-
     /* Scrollbar */
-    .table-wrapper::-webkit-scrollbar,
-    .action-log::-webkit-scrollbar {
+    .table-wrapper::-webkit-scrollbar {
         width: 6px;
         height: 6px;
     }
 
-    .table-wrapper::-webkit-scrollbar-track,
-    .action-log::-webkit-scrollbar-track {
+    .table-wrapper::-webkit-scrollbar-track {
         background: rgba(255, 255, 255, 0.05);
         border-radius: 3px;
     }
 
-    .table-wrapper::-webkit-scrollbar-thumb,
-    .action-log::-webkit-scrollbar-thumb {
+    .table-wrapper::-webkit-scrollbar-thumb {
         background: rgba(255, 255, 255, 0.2);
         border-radius: 3px;
     }

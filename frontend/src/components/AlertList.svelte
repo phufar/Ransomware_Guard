@@ -1,4 +1,12 @@
 <script lang="ts">
+  import {
+    Bell,
+    CheckCircle2,
+    FileText,
+    Bug,
+    HelpCircle,
+    AlertTriangle,
+  } from "lucide-svelte";
   export let alerts: Array<{
     id: number;
     file_path: string;
@@ -16,59 +24,94 @@
   }
 
   function formatPath(path: string): string {
-    const parts = path.split('/');
-    return parts.length > 3 
-      ? '.../' + parts.slice(-3).join('/')
-      : path;
+    const parts = path.split("/");
+    return parts.length > 3 ? ".../" + parts.slice(-3).join("/") : path;
   }
 </script>
 
 <div class="alert-list">
-  <h2>🚨 Recent Alerts</h2>
+  <h2 style="display: flex; align-items: center; gap: 0.5rem;">
+    <Bell size={18} /> Recent Alerts
+  </h2>
 
   {#if alerts.length === 0}
     <div class="empty-state">
-      <span class="icon">✅</span>
+      <span class="icon" style="display: flex; justify-content: center;"
+        ><CheckCircle2 size={48} color="#00ff88" /></span
+      >
       <p>No threats detected</p>
     </div>
   {:else}
     <div class="alerts">
       {#each alerts as alert (alert.id)}
         <div class="alert-item" class:success={alert.action_success}>
-          <div class="alert-header">
-            <span class="alert-id">#{alert.id}</span>
-            <span class="alert-time">{formatTime(alert.timestamp)}</span>
+          <div class="alert-icon-left">
+            {#if alert.action_success}
+              <CheckCircle2 size={24} color="#00ff88" />
+            {:else}
+              <AlertTriangle size={24} color="#ff4444" />
+            {/if}
           </div>
-          
-          <div class="alert-content">
-            <div class="file-path" title={alert.file_path}>
-              📄 {formatPath(alert.file_path)}
-            </div>
-            
-            <div class="alert-details">
-              <span class="entropy">
-                Entropy: <strong>{alert.entropy.toFixed(4)}</strong>
-              </span>
-              
-              {#if alert.process_found}
-                <span class="process">
-                  👾 {alert.process_name} (PID: {alert.process_pid})
-                </span>
-              {:else}
-                <span class="process unknown">
-                  ❓ Process not found
-                </span>
-              {/if}
+
+          <div class="alert-content-wrapper">
+            <div class="alert-header">
+              <span class="alert-id">#{alert.id}</span>
+              <span class="alert-time">{formatTime(alert.timestamp)}</span>
             </div>
 
-            <div class="action-status" class:success={alert.action_success}>
-              {#if alert.action_success}
-                ✅ Process terminated
-              {:else if alert.action_taken}
-                ⚠️ {alert.action_taken}
-              {:else}
-                ⚠️ No action taken
-              {/if}
+            <div class="alert-content">
+              <div class="alert-left">
+                <div
+                  class="file-path"
+                  title={alert.file_path}
+                  style="display: flex; align-items: center; gap: 0.5rem;"
+                >
+                  <FileText size={16} />
+                  {formatPath(alert.file_path)}
+                </div>
+                <div class="alert-details">
+                  {#if alert.process_found}
+                    <span
+                      class="process"
+                      style="display: flex; align-items: center; gap: 0.25rem;"
+                    >
+                      <Bug size={14} />
+                      {alert.process_name}
+                    </span>
+                  {:else}
+                    <span
+                      class="process unknown"
+                      style="display: flex; align-items: center; gap: 0.25rem;"
+                    >
+                      <HelpCircle size={14} /> Process not found
+                    </span>
+                  {/if}
+                </div>
+              </div>
+
+              <div class="alert-right">
+                <span class="entropy">
+                  Entropy: <strong>{alert.entropy.toFixed(4)}</strong>
+                </span>
+
+                {#if alert.process_found}
+                  <span class="pid-badge">PID: {alert.process_pid}</span>
+                {/if}
+
+                <div
+                  class="action-status"
+                  class:success={alert.action_success}
+                  style="display: flex; align-items: center; gap: 0.25rem;"
+                >
+                  {#if alert.action_success}
+                    <CheckCircle2 size={14} /> Terminated
+                  {:else if alert.action_taken}
+                    <AlertTriangle size={14} /> {alert.action_taken}
+                  {:else}
+                    <AlertTriangle size={14} /> No action
+                  {/if}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -79,11 +122,15 @@
 
 <style>
   .alert-list {
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 16px;
+    background: rgba(0, 0, 0, 0.4);
+    border-radius: 12px;
     padding: 1.5rem;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.05);
     backdrop-filter: blur(10px);
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
   }
 
   h2 {
@@ -110,21 +157,37 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    max-height: 400px;
+    flex: 1;
     overflow-y: auto;
   }
 
   .alert-item {
-    background: rgba(255, 68, 68, 0.1);
-    border: 1px solid rgba(255, 68, 68, 0.3);
-    border-radius: 12px;
-    padding: 1rem;
+    background: #0a0a0a;
+    border: 1px solid #1a1a1a;
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
     animation: slideIn 0.3s ease-out;
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .alert-icon-left {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding-top: 0.25rem;
+  }
+
+  .alert-content-wrapper {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
   }
 
   .alert-item.success {
-    background: rgba(0, 255, 136, 0.05);
-    border-color: rgba(0, 255, 136, 0.3);
+    border-color: #002200;
   }
 
   @keyframes slideIn {
@@ -141,9 +204,9 @@
   .alert-header {
     display: flex;
     justify-content: space-between;
-    margin-bottom: 0.75rem;
-    font-size: 0.85rem;
-    color: #888;
+    margin-bottom: 0.5rem;
+    font-size: 0.8rem;
+    color: #666;
   }
 
   .alert-id {
@@ -155,10 +218,31 @@
     color: #00ff88;
   }
 
+  .alert-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .alert-left {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .alert-right {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+  }
+
   .file-path {
     font-family: monospace;
-    color: #00d9ff;
-    margin-bottom: 0.5rem;
+    color: #e0e0e0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -167,13 +251,22 @@
   .alert-details {
     display: flex;
     gap: 1rem;
-    flex-wrap: wrap;
-    font-size: 0.9rem;
-    margin-bottom: 0.75rem;
+    font-size: 0.85rem;
   }
 
   .entropy {
     color: #ffaa00;
+    font-size: 0.85rem;
+  }
+
+  .pid-badge {
+    background: #222;
+    color: #ccc;
+    font-family: monospace;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    border: 1px solid #444;
   }
 
   .process {
@@ -181,19 +274,22 @@
   }
 
   .process.unknown {
-    color: #888;
+    color: #666;
   }
 
   .action-status {
-    font-size: 0.85rem;
-    padding: 0.5rem;
-    background: rgba(255, 170, 0, 0.1);
-    border-radius: 6px;
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+    background: #221100;
+    border: 1px solid #553300;
+    border-radius: 4px;
     color: #ffaa00;
+    font-weight: 500;
   }
 
   .action-status.success {
-    background: rgba(0, 255, 136, 0.1);
+    background: #002211;
+    border: 1px solid #005522;
     color: #00ff88;
   }
 

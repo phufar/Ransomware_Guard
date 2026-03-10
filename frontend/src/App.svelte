@@ -1,10 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import StatusCard from "./components/StatusCard.svelte";
-  import StatsPanel from "./components/StatsPanel.svelte";
+  import SecondaryBar from "./components/SecondaryBar.svelte";
   import AlertList from "./components/AlertList.svelte";
-  import ControlPanel from "./components/ControlPanel.svelte";
   import ProcessView from "./components/ProcessView.svelte";
+  import { LayoutDashboard, Cpu } from "lucide-svelte";
 
   let activeTab: "dashboard" | "processes" = "dashboard";
 
@@ -22,7 +21,7 @@
   let alerts: any[] = [];
   let processes: any[] = [];
   let ws: WebSocket | null = null;
-  let connected = false;
+  let guardLoading = false;
 
   // Fetch initial data
   async function fetchStatus() {
@@ -58,7 +57,6 @@
     ws = new WebSocket(`${protocol}//${window.location.host}/ws/alerts`);
 
     ws.onopen = () => {
-      connected = true;
       console.log("WebSocket connected");
     };
 
@@ -79,7 +77,6 @@
     };
 
     ws.onclose = () => {
-      connected = false;
       console.log("WebSocket disconnected, reconnecting...");
       setTimeout(connectWebSocket, 3000);
     };
@@ -91,6 +88,7 @@
 
   // Guard control
   async function startGuard(watchPath: string, entropy: number = 7.5) {
+    guardLoading = true;
     try {
       const res = await fetch("/api/guard/start", {
         method: "POST",
@@ -109,10 +107,13 @@
     } catch (e) {
       console.error("Failed to start guard:", e);
       throw e;
+    } finally {
+      guardLoading = false;
     }
   }
 
   async function stopGuard() {
+    guardLoading = true;
     try {
       const res = await fetch("/api/guard/stop", { method: "POST" });
       const data = await res.json();
@@ -123,6 +124,8 @@
     } catch (e) {
       console.error("Failed to stop guard:", e);
       throw e;
+    } finally {
+      guardLoading = false;
     }
   }
 
@@ -149,7 +152,7 @@
 
 <main>
   <header>
-    <h1>🛡️ Ransomware Guard</h1>
+    <h1>Ransomware Guard</h1>
     <div class="header-right">
       <nav class="tabs">
         <button
@@ -157,32 +160,28 @@
           class:active={activeTab === "dashboard"}
           on:click={() => (activeTab = "dashboard")}
         >
-          📊 Dashboard
+          <LayoutDashboard size={16} />
+          <span>Dashboard</span>
         </button>
         <button
           class="tab"
           class:active={activeTab === "processes"}
           on:click={() => (activeTab = "processes")}
         >
-          ⚙️ Processes
+          <Cpu size={16} />
+          <span>Processes</span>
         </button>
       </nav>
-      <div class="connection-status" class:connected>
-        {connected ? "🟢 Connected" : "🔴 Disconnected"}
-      </div>
     </div>
   </header>
 
   {#if activeTab === "dashboard"}
     <div class="dashboard">
-      <div class="top-row">
-        <StatusCard {status} />
-        <StatsPanel {stats} />
-      </div>
-
-      <ControlPanel
+      <SecondaryBar
         running={status.running}
-        watchPath={status.watch_path}
+        loading={guardLoading}
+        processesKilled={stats.processes_terminated}
+        threatsDetected={stats.threats_detected}
         on:start={(e) => startGuard(e.detail.path, e.detail.entropy)}
         on:stop={() => stopGuard()}
       />
@@ -204,7 +203,13 @@
   :global(body) {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
       Ubuntu, sans-serif;
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    background: #0a0a0a;
+    background-image: linear-gradient(
+      to bottom,
+      #000000 0%,
+      #111111 200px,
+      #0a0a0a 100%
+    );
     min-height: 100vh;
     color: #e0e0e0;
   }
@@ -212,7 +217,10 @@
   main {
     max-width: 1400px;
     margin: 0 auto;
-    padding: 2rem;
+    padding: 2rem 2rem 1rem 2rem;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
 
   header {
@@ -227,11 +235,15 @@
   }
 
   h1 {
-    font-size: 2rem;
-    background: linear-gradient(135deg, #00d9ff, #00ff88);
+    font-family: "Jersey 10", sans-serif;
+    font-size: 3.5rem;
+    font-weight: 400;
+    line-height: 1;
+    background: linear-gradient(135deg, #ff0000 0%, #ffffff 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    margin: 0;
   }
 
   .header-right {
@@ -250,6 +262,9 @@
   }
 
   .tab {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     padding: 0.5rem 1.25rem;
     border: none;
     background: transparent;
@@ -266,36 +281,15 @@
   }
 
   .tab.active {
-    background: rgba(0, 217, 255, 0.15);
-    color: #00d9ff;
-  }
-
-  .connection-status {
-    padding: 0.5rem 1rem;
-    border-radius: 20px;
-    background: rgba(255, 0, 0, 0.2);
-    font-size: 0.9rem;
-  }
-
-  .connection-status.connected {
-    background: rgba(0, 255, 100, 0.2);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
   }
 
   .dashboard {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
-  }
-
-  .top-row {
-    display: grid;
-    grid-template-columns: 1fr 2fr;
-    gap: 1.5rem;
-  }
-
-  @media (max-width: 900px) {
-    .top-row {
-      grid-template-columns: 1fr;
-    }
+    flex: 1;
+    min-height: 0;
   }
 </style>
