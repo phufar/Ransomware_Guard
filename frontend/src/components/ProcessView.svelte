@@ -258,7 +258,7 @@
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.2);
         background: rgba(0, 217, 255, 0.1);
-        color: #00d9ff;
+        color: #ffffff;
         cursor: pointer;
         font-size: 0.9rem;
         transition: all 0.2s;
@@ -310,7 +310,7 @@
     }
 
     th:hover {
-        color: #00d9ff;
+        color: rgba(255,0,0,1);
     }
 
     td {

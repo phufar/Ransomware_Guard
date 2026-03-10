@@ -3,7 +3,7 @@
   import SecondaryBar from "./components/SecondaryBar.svelte";
   import AlertList from "./components/AlertList.svelte";
   import ProcessView from "./components/ProcessView.svelte";
-  import { LayoutDashboard, Cpu } from "lucide-svelte";
+  import { LayoutDashboard, Cpu, Skull } from "lucide-svelte";
 
   let activeTab: "dashboard" | "processes" = "dashboard";
 
@@ -152,7 +152,10 @@
 
 <main>
   <header>
-    <h1>Ransomware Guard</h1>
+    <h1 style="display: flex; align-items: center; gap: 0.75rem;">
+      <Skull size={48} color="#ff0000" />
+      Ransomware Guard
+    </h1>
     <div class="header-right">
       <nav class="tabs">
         <button
@@ -186,7 +189,7 @@
         on:stop={() => stopGuard()}
       />
 
-      <AlertList {alerts} />
+      <AlertList {alerts} on:clear={() => (alerts = [])} />
     </div>
   {:else}
     <ProcessView {processes} guardRunning={status.running} />
@@ -281,7 +284,7 @@
   }
 
   .tab.active {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 0, 0, 0.1);
     color: #fff;
   }
 

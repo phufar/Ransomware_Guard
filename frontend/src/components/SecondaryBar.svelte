@@ -182,7 +182,7 @@
         font-weight: 600;
         cursor: pointer;
         transition: all 0.2s;
-        width: 125px; /* Ensures consistent button sizing during text shifts */
+        width: 125px;
     }
 
     .action-btn:disabled {

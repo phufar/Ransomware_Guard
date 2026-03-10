@@ -1,12 +1,20 @@
 <script lang="ts">
+  import { createEventDispatcher } from "svelte";
   import {
     Bell,
     CheckCircle2,
-    FileText,
     Bug,
     HelpCircle,
     AlertTriangle,
+    CircleAlert,
+    FileExclamationPoint,
+    Trash2,
+    Check,
+    X,
   } from "lucide-svelte";
+
+  const dispatch = createEventDispatcher();
+  let showConfirmClear = false;
   export let alerts: Array<{
     id: number;
     file_path: string;
@@ -30,9 +38,44 @@
 </script>
 
 <div class="alert-list">
-  <h2 style="display: flex; align-items: center; gap: 0.5rem;">
-    <Bell size={18} /> Recent Alerts
-  </h2>
+  <div class="list-header">
+    <h2 style="display: flex; align-items: center; gap: 0.5rem; margin: 0;">
+      <Bell size={18} /> Recent Alerts
+    </h2>
+
+    {#if alerts.length > 0}
+      {#if showConfirmClear}
+        <div class="confirm-group">
+          <span class="confirm-text">Clear all?</span>
+          <button
+            class="action-btn yes-btn"
+            on:click={() => {
+              dispatch("clear");
+              showConfirmClear = false;
+            }}
+            title="Yes, clear all"
+          >
+            <Check size={16} />
+          </button>
+          <button
+            class="action-btn no-btn"
+            on:click={() => (showConfirmClear = false)}
+            title="Cancel"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      {:else}
+        <button
+          class="clear-btn"
+          on:click={() => (showConfirmClear = true)}
+          title="Clear all alerts"
+        >
+          <Trash2 size={18} />
+        </button>
+      {/if}
+    {/if}
+  </div>
 
   {#if alerts.length === 0}
     <div class="empty-state">
@@ -47,7 +90,7 @@
             {#if alert.action_success}
               <CheckCircle2 size={24} color="#00ff88" />
             {:else}
-              <AlertTriangle size={24} color="#ff4444" />
+              <CircleAlert size={24} color="#ff4444" />
             {/if}
           </div>
 
@@ -64,7 +107,7 @@
                   title={alert.file_path}
                   style="display: flex; align-items: center; gap: 0.5rem;"
                 >
-                  <FileText size={16} />
+                  <FileExclamationPoint size={16} />
                   {formatPath(alert.file_path)}
                 </div>
                 <div class="alert-details">
@@ -134,9 +177,88 @@
   h2 {
     font-size: 1.1rem;
     color: #888;
-    margin-bottom: 1.5rem;
     text-transform: uppercase;
     letter-spacing: 1px;
+  }
+
+  .list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+  }
+
+  .clear-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #888;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 0.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+  }
+
+  .clear-btn:hover {
+    color: #ff4444;
+    border-color: rgba(255, 68, 68, 0.3);
+    background: rgba(255, 68, 68, 0.1);
+  }
+
+  .confirm-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    animation: fadeIn 0.2s ease-out;
+  }
+
+  .confirm-text {
+    font-size: 0.8rem;
+    color: #888;
+    margin-right: 0.5rem;
+  }
+
+  .action-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 0.3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+  }
+
+  .yes-btn {
+    color: #00ff88;
+  }
+
+  .yes-btn:hover {
+    border-color: rgba(0, 255, 136, 0.3);
+    background: rgba(0, 255, 136, 0.1);
+  }
+
+  .no-btn {
+    color: rgba(255,0,0,1);;
+  }
+
+  .no-btn:hover {
+    border-color: rgba(255, 0,0, 0.3);
+    background: rgba(255, 0, 0, 0.1);
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateX(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
   }
 
   .empty-state {
