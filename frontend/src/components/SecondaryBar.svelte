@@ -1,6 +1,6 @@
 <script lang="ts">
     import { createEventDispatcher } from "svelte";
-    import { Play, Square, Loader2 } from "lucide-svelte";
+    import { Play, Square, Hourglass } from "lucide-svelte";
 
     export let running: boolean;
     export let processesKilled: number = 0;
@@ -53,7 +53,6 @@
                 on:blur={validateEntropy}
                 min="6"
                 max="8"
-                step="0.1"
                 disabled={running || loading}
                 class="minimal-input entropy-input"
                 title="Entropy Threshold"
@@ -63,7 +62,7 @@
         {#if !running}
             {#if loading}
                 <button class="action-btn starting-btn" disabled>
-                    <Loader2 size={18} class="spin" />
+                    <Hourglass size={18} />
                     <span>Starting...</span>
                 </button>
             {:else}
@@ -74,7 +73,7 @@
             {/if}
         {:else if loading}
             <button class="action-btn stopping-btn" disabled>
-                <Loader2 size={18} class="spin" />
+                <Hourglass size={18} />
                 <span>Stopping...</span>
             </button>
         {:else}
@@ -175,6 +174,7 @@
     .action-btn {
         display: flex;
         align-items: center;
+        justify-content: center;
         gap: 0.5rem;
         padding: 0.5rem 1rem;
         border: none;
@@ -182,6 +182,7 @@
         font-weight: 600;
         cursor: pointer;
         transition: all 0.2s;
+        width: 125px; /* Ensures consistent button sizing during text shifts */
     }
 
     .action-btn:disabled {
@@ -219,19 +220,6 @@
         color: #000;
         opacity: 1 !important;
         cursor: wait !important;
-    }
-
-    :global(.spin) {
-        animation: global-spin 1s linear infinite;
-    }
-
-    @keyframes global-spin {
-        from {
-            transform: rotate(0deg);
-        }
-        to {
-            transform: rotate(360deg);
-        }
     }
 
     @media (max-width: 850px) {

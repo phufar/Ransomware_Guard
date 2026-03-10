@@ -155,7 +155,9 @@
                                 class:trusted-row={proc.is_trusted}
                             >
                                 <td class="pid">{proc.pid}</td>
-                                <td class="name">{proc.name}</td>
+                                <td class="name" title={proc.name}
+                                    >{proc.name}</td
+                                >
                                 <td class="username">{proc.username || "—"}</td>
                                 <td class="cpu"
                                     >{proc.cpu_percent.toFixed(1)}</td
@@ -341,6 +343,10 @@
     .name {
         color: #e0e0e0;
         font-weight: 500;
+        max-width: 15vw;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .username {

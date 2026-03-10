@@ -36,9 +36,7 @@
 
   {#if alerts.length === 0}
     <div class="empty-state">
-      <span class="icon" style="display: flex; justify-content: center;"
-        ><CheckCircle2 size={48} color="#00ff88" /></span
-      >
+      <span class="icon"><CheckCircle2 size={48} /></span>
       <p>No threats detected</p>
     </div>
   {:else}
@@ -142,8 +140,11 @@
   }
 
   .empty-state {
-    text-align: center;
-    padding: 3rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
     color: #888;
   }
 
