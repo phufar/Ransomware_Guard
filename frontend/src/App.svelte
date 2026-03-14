@@ -3,7 +3,7 @@
   import SecondaryBar from "./components/SecondaryBar.svelte";
   import AlertList from "./components/AlertList.svelte";
   import ProcessView from "./components/ProcessView.svelte";
-  import { LayoutDashboard, Cpu, Skull } from "lucide-svelte";
+  import { LayoutDashboard, Cpu, BrickWallShield } from "lucide-svelte";
 
   let activeTab: "dashboard" | "processes" = "dashboard";
 
@@ -153,7 +153,7 @@
 <main>
   <header>
     <h1 style="display: flex; align-items: center; gap: 0.75rem;">
-      <Skull size={48} color="#ff0000" />
+      <BrickWallShield size={48} color="#00ffcc" />
       Ransomware Guard
     </h1>
     <div class="header-right">
@@ -242,7 +242,7 @@
     font-size: 3.5rem;
     font-weight: 400;
     line-height: 1;
-    background: linear-gradient(135deg, #ff0000 0%, #ffffff 100%);
+    background: linear-gradient(135deg, #00ffcc 0%, #ffffff 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -284,7 +284,7 @@
   }
 
   .tab.active {
-    background: rgba(255, 0, 0, 0.1);
+    background: rgba(0, 255, 204, 0.1);
     color: #fff;
   }
 

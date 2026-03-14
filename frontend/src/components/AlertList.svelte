@@ -242,11 +242,11 @@
   }
 
   .no-btn {
-    color: rgba(255,0,0,1);;
+    color: rgba(255, 0, 0, 1);
   }
 
   .no-btn:hover {
-    border-color: rgba(255, 0,0, 0.3);
+    border-color: rgba(255, 0, 0, 0.3);
     background: rgba(255, 0, 0, 0.1);
   }
 
@@ -333,7 +333,7 @@
   }
 
   .alert-id {
-    color: #ff6b6b;
+    color: #00ffcc;
     font-weight: bold;
   }
 
@@ -393,7 +393,7 @@
   }
 
   .process {
-    color: #ff6b6b;
+    color: #00ffcc;
   }
 
   .process.unknown {

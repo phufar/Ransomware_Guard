@@ -310,7 +310,7 @@
     }
 
     th:hover {
-        color: rgba(255,0,0,1);
+        color: #00ffcc;
     }
 
     td {
