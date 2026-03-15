@@ -18,11 +18,26 @@ flowchart TD
     
     FM_start --> FM_threads["Start Analysis & Backup Workers"]
     
-    FM_ebpf -->|Success| Monitor_EBPF["EBPFMonitor.start()"]
+    FM_ebpf -->|Success| Monitor_EBPF["EBPFMonitor.start()<br/>Compile & Load BPF_PROGRAM"]
     FM_ebpf -->|Fallback| Monitor_WD["Watchdog Observer.start()"]
     
-    %% Base Detection
-    Monitor_EBPF -.->|vfs_write| FM_on_ebpf["_on_ebpf_event()<br/>SIGSTOP & queue"]
+    %% eBPF Kernel Hooks
+    Monitor_EBPF --> Hook_Write["kprobe: vfs_write()<br/>Kernel-space"]
+    Monitor_EBPF --> Hook_Rename["tracepoint: sys_enter_renameat2"]
+    Monitor_EBPF --> Hook_Unlink["tracepoint: sys_enter_unlinkat"]
+    
+    Hook_Write --> BPF_Logic["__builtin_memset event<br/>Extract PID, UID, comm, basename"]
+    Hook_Write -.-> BPF_Anomaly["Update write_counts Map<br/>count > 50? rapid_writes = 1"]
+    
+    BPF_Logic --> Perf_Buffer["file_events.perf_submit()<br/>Ring Buffer"]
+    Hook_Rename --> Perf_Buffer
+    Hook_Unlink --> Perf_Buffer
+    
+    Perf_Buffer --> BPF_Poll["_poll_events()<br/>User-space Thread"]
+    BPF_Poll --> BPF_Handle["_handle_kernel_event()"]
+    BPF_Handle --> BPF_Resolve["_resolve_path()<br/>Read /proc/pid/fd symlinks"]
+    BPF_Resolve --> FM_on_ebpf["FileMonitor._on_ebpf_event()<br/>SIGSTOP & queue"]
+    
     Monitor_WD -.->|inotify/FSEvents| FM_on_mod["Watchdog Handler"]
     
     FM_on_ebpf --> Event_Queue["_event_queue.put()"]
