@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 clear
 echo -e "${GREEN}${BOLD}═══════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  🖥️  FRONTEND  (vite :5173)${NC}"
+echo -e "${GREEN}${BOLD}     FRONTEND  (vite :5173)${NC}"
 echo -e "${GREEN}${BOLD}═══════════════════════════════════${NC}"
 echo ""
 npm run dev --prefix "$SCRIPT_DIR/frontend"

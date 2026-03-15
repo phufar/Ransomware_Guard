@@ -8,7 +8,7 @@ NC='\033[0m'
 
 clear
 echo -e "${GREEN}${BOLD}═══════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  🛡️  RANSOMWARE GUARD  ─  STATUS${NC}"
+echo -e "${GREEN}${BOLD}     RANSOMWARE GUARD  ─  STATUS${NC}"
 echo -e "${GREEN}${BOLD}═══════════════════════════════════${NC}"
 echo ""
 echo -e "${CYAN}  Session :${NC}  ransomware-guard"

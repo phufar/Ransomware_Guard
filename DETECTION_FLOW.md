@@ -4,8 +4,31 @@ This document provides a deep dive into the exact function calls across the Pyth
 
 ```mermaid
 flowchart TD
+    %% Guard Initialization
+    API_start["POST /api/guard/start"] --> GS_start["GuardService.start()"]
+    
+    GS_start --> Init_EC["Init EntropyCalculator"]
+    GS_start --> Init_PM["Init ProcessMonitor"]
+    GS_start --> Init_FM["Init FileMonitor"]
+    
+    GS_start --> FM_start["FileMonitor.start()"]
+    
+    FM_start --> FM_proactive_scan["_run_proactive_backup_scan()<br/>Walk dir & backup"]
+    FM_start --> FM_ebpf{"_try_start_ebpf()"}
+    
+    FM_start --> FM_threads["Start Analysis & Backup Workers"]
+    
+    FM_ebpf -->|Success| Monitor_EBPF["EBPFMonitor.start()"]
+    FM_ebpf -->|Fallback| Monitor_WD["Watchdog Observer.start()"]
+    
     %% Base Detection
-    FM_on_mod["FileMonitor.on_modified()"] --> FM_worker["FileMonitor._analysis_worker()"]
+    Monitor_EBPF -.->|vfs_write| FM_on_ebpf["_on_ebpf_event()<br/>SIGSTOP & queue"]
+    Monitor_WD -.->|inotify/FSEvents| FM_on_mod["Watchdog Handler"]
+    
+    FM_on_ebpf --> Event_Queue["_event_queue.put()"]
+    FM_on_mod --> Event_Queue
+    
+    Event_Queue --> FM_worker["FileMonitor._analysis_worker()"]
     FM_worker --> FM_analyze["FileMonitor._analyze_file()"]
     
     %% Entropy Calculation Phase

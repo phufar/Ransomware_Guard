@@ -86,14 +86,6 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 #  5. Launch tmux with 3-pane layout
 # ═══════════════════════════════════════════════════════════════════════════════
-#
-#  ┌──────────────────┬──────────────────────────┐
-#  │  STATUS (pane 0) │                          │
-#  ├──────────────────┤  BACKEND (pane 1)        │
-#  │  FRONTEND        │  uvicorn :8000           │
-#  │  (pane 2)        │                          │
-#  └──────────────────┴──────────────────────────┘
-#
 echo ""
 info "Starting tmux session: $SESSION_NAME"
 
@@ -112,7 +104,7 @@ tmux select-pane -t "$SESSION_NAME:guard.2"
 # ── Style the tmux bar ──────────────────────────────────────────────────────
 tmux set-option -t "$SESSION_NAME" status on
 tmux set-option -t "$SESSION_NAME" status-style "bg=colour235,fg=colour136"
-tmux set-option -t "$SESSION_NAME" status-left "#[fg=colour46,bold] 🛡️  Ransomware Guard "
+tmux set-option -t "$SESSION_NAME" status-left "#[fg=colour46,bold]  Ransomware Guard "
 tmux set-option -t "$SESSION_NAME" status-right "#[fg=colour75]Backend :8000 | Frontend :5173 #[fg=colour240]| %H:%M "
 tmux set-option -t "$SESSION_NAME" status-left-length 30
 tmux set-option -t "$SESSION_NAME" status-right-length 50

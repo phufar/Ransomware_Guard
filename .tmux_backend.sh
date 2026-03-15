@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 clear
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  🛡️  BACKEND  (uvicorn :8000)${NC}"
+echo -e "${GREEN}${BOLD}     BACKEND  (uvicorn :8000)${NC}"
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════════${NC}"
 echo ""
 source "$SCRIPT_DIR/backend/.venv/bin/activate"
