@@ -40,6 +40,7 @@ from watchdog.events import FileSystemEventHandler
 from .EntropyCalculator import EntropyCalculator
 from .MagicBytesDetector import MagicBytesDetector
 from .BackupManager import BackupManager
+from .logger import log_event
 
 # Conditional import: eBPF is only available on Linux with BCC
 try:
@@ -239,6 +240,19 @@ class FileMonitor:
             with self._frozen_lock:
                 self._frozen_pids.add(pid)
             logger.info(f"Process frozen (SIGSTOP): PID {pid}")
+
+            # Structured event log: process frozen
+            try:
+                import psutil
+                pname = psutil.Process(pid).name()
+            except Exception:
+                pname = None
+            log_event(
+                what="PROCESS_FROZEN",
+                who_pid=pid,
+                who_process=pname,
+                decision="frozen",
+            )
             return True
         except ProcessLookupError:
             logger.debug(f"Cannot freeze PID {pid}: process no longer exists")
@@ -550,6 +564,15 @@ class FileMonitor:
                 if len(self._last_checked) > 5000:
                     self._last_checked.clear()
 
+                # Structured event log: every write detection
+                log_event(
+                    what="WRITE_DETECTED",
+                    who_pid=pid,
+                    who_process=process_name,
+                    where=file_path,
+                    decision="analyzing",
+                )
+
                 # Run analysis pipeline
                 self._analyze_file(file_path, pid=pid, process_name=process_name)
                 self._event_queue.task_done()
@@ -631,6 +654,17 @@ class FileMonitor:
                     f"PID: {pid} | Process: {process_name}"
                 )
 
+                # Structured event log: threat detected
+                log_event(
+                    what="THREAT_DETECTED",
+                    who_pid=pid,
+                    who_process=process_name,
+                    where=file_path,
+                    decision="threat",
+                    entropy=result['entropy'],
+                    base64_encoded=result.get('base64_encoded'),
+                )
+
                 # Step 3a: Kill the responsible process (already frozen)
                 kill_result = None
                 if self.process_monitor and pid:
@@ -640,6 +674,17 @@ class FileMonitor:
                             file_path, result['entropy'], pid
                         )
                     logger.info(f"Kill result: {kill_result}")
+
+                    # Structured event log: process killed
+                    log_event(
+                        what="PROCESS_KILLED",
+                        who_pid=pid,
+                        who_process=process_name,
+                        where=file_path,
+                        decision="killed",
+                        entropy=result['entropy'],
+                        details=kill_result,
+                    )
                 elif self.process_monitor:
                     # Watchdog path: scan /proc to find the writer
                     kill_result = self.process_monitor.handle_ransomware_alert(
@@ -684,6 +729,17 @@ class FileMonitor:
                         import shutil
                         shutil.copy2(proactive_backup, restore_target)
                         logger.info(f"File restored from PROACTIVE backup: {restore_target}")
+
+                        # Structured event log: file restored
+                        log_event(
+                            what="FILE_RESTORED",
+                            who_pid=pid,
+                            who_process=process_name,
+                            where=restore_target,
+                            decision="restored",
+                            entropy=result['entropy'],
+                            details={"backup_source": str(proactive_backup)},
+                        )
                         # Remove the encrypted copy if we restored the original
                         if original_path and os.path.exists(file_path):
                             try:
@@ -728,6 +784,17 @@ class FileMonitor:
                 logger.debug(
                     f"Safe file: {os.path.basename(file_path)} "
                     f"(entropy: {result['entropy']:.2f})"
+                )
+
+                # Structured event log: file safe
+                log_event(
+                    what="FILE_SAFE",
+                    who_pid=pid,
+                    who_process=process_name,
+                    where=file_path,
+                    decision="safe",
+                    entropy=result['entropy'],
+                    base64_encoded=result.get('base64_encoded'),
                 )
 
         except Exception as e:

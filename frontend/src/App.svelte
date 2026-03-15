@@ -3,9 +3,15 @@
   import SecondaryBar from "./components/SecondaryBar.svelte";
   import AlertList from "./components/AlertList.svelte";
   import ProcessView from "./components/ProcessView.svelte";
-  import { LayoutDashboard, Cpu, BrickWallShield } from "lucide-svelte";
+  import EventLog from "./components/EventLog.svelte";
+  import {
+    LayoutDashboard,
+    Cpu,
+    FileText,
+    BrickWallShield,
+  } from "lucide-svelte";
 
-  let activeTab: "dashboard" | "processes" = "dashboard";
+  let activeTab: "dashboard" | "processes" | "logs" = "dashboard";
 
   let status: {
     running: boolean;
@@ -174,6 +180,14 @@
           <Cpu size={16} />
           <span>Processes</span>
         </button>
+        <button
+          class="tab"
+          class:active={activeTab === "logs"}
+          on:click={() => (activeTab = "logs")}
+        >
+          <FileText size={16} />
+          <span>Logs</span>
+        </button>
       </nav>
     </div>
   </header>
@@ -191,8 +205,12 @@
 
       <AlertList {alerts} on:clear={() => (alerts = [])} />
     </div>
-  {:else}
+  {:else if activeTab === "processes"}
     <ProcessView {processes} guardRunning={status.running} />
+  {:else}
+    <div class="dashboard">
+      <EventLog />
+    </div>
   {/if}
 </main>
 

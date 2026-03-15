@@ -168,5 +168,45 @@ async def stop_guard(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/events")
+async def get_events(what: str = "", limit: int = 500):
+    """
+    Get structured detection events from detection_events.log.
+
+    Query params:
+        what:  Filter by event type (e.g. WRITE_DETECTED, THREAT_DETECTED, FILE_SAFE)
+        limit: Max number of events to return (default 500, 0 = all)
+    """
+    import json
+
+    log_path = Path(__file__).parent.parent / "logs" / "detection_events.log"
+
+    if not log_path.exists():
+        return []
+
+    events = []
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    if what and event.get("what", "") != what.upper():
+                        continue
+                    events.append(event)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+
+    # Return newest first
+    events.reverse()
+
+    if limit > 0:
+        events = events[:limit]
+
+    return events
 
 
